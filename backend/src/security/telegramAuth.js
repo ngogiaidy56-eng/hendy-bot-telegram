@@ -2,7 +2,7 @@ import { constantTimeEqual, hmacSha256, toHex } from "./cryptoService.js";
 
 const encoder = new TextEncoder();
 
-export async function verifyTelegramInitData(initData, botToken, maxAgeSeconds = 86400) {
+export async function verifyTelegramInitData(initData, botToken, maxAgeSeconds = 3600) {
   if (!initData || !botToken) throw new Error("Thiếu Telegram initData hoặc bot token.");
   const params = new URLSearchParams(initData);
   const receivedHash = params.get("hash");
