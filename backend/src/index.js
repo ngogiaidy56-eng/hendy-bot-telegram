@@ -6,7 +6,7 @@ import { handleWebAppData } from "./bot/handlers.js";
 import { telegramCall } from "./bot/telegram.js";
 import { envValidator, getAllowedOrigins, getRequiredSecret } from "./config/env.js";
 import { getRelease, getReleaseStats, listReleases } from "./db/appModel.js";
-import { createOrder, getOrderForUser, getOrderStats, listOrders } from "./db/orderModel.js";
+import { createOrder, getAdminOrder, getAdminOrderStats, getOrderForUser, getOrderStats, listAdminOrders, listOrders, updateOrderStatus } from "./db/orderModel.js";
 import { upsertUser } from "./db/userModel.js";
 import { errorHandler } from "./middlewares/errorHandler.js";
 import { rateLimitMiddleware } from "./middlewares/rateLimiter.js";
@@ -194,6 +194,33 @@ async function route(request, env) {
     return handleLinks(request, env, telegramUser, url);
   }
 
+  if (path === "/api/v1/admin/orders" && request.method === "GET") {
+    await requireAdmin(request, env);
+    const result = await listAdminOrders(env, {
+      status: url.searchParams.get("status"),
+      module: url.searchParams.get("module"),
+      q: url.searchParams.get("q"),
+      limit: url.searchParams.get("limit"),
+      offset: url.searchParams.get("offset")
+    });
+    return json({ ...result, stats: await getAdminOrderStats(env) });
+  }
+
+  const adminOrderMatch = path.match(/^\\/api\\/v1\\/admin\\/orders\\/([0-9a-f-]{36})(?:\\/(status))?$/i);
+  if (adminOrderMatch && request.method === "GET" && !adminOrderMatch[2]) {
+    await requireAdmin(request, env);
+    const result = await getAdminOrder(env, adminOrderMatch[1]);
+    if (!result) return json({ error: "Không tìm thấy đơn hàng." }, 404);
+    return json(result);
+  }
+
+  if (adminOrderMatch && request.method === "POST" && adminOrderMatch[2] === "status") {
+    const admin = await requireAdmin(request, env);
+    const body = await readJsonLimited(request);
+    const result = await updateOrderStatus(env, adminOrderMatch[1], admin, body, request.headers.get("Idempotency-Key"));
+    return json(result, result.duplicate ? 200 : 200);
+  }
+
   if (path === "/api/v1/admin/releases" && request.method === "POST") {
     await requireAdmin(request, env);
     return handleUploadApp(request, env);
@@ -202,10 +229,8 @@ async function route(request, env) {
   if (path === "/api/v1/admin/stats" && request.method === "GET") {
     await requireAdmin(request, env);
     const releaseStats = await getReleaseStats(env);
-    const orderStats = await env.DB.prepare(
-      "SELECT COUNT(*) AS total FROM orders"
-    ).first().catch(() => ({ total: 0 }));
-    return json({ stats: { ...releaseStats, orders: Number(orderStats?.total || 0) } });
+    const orderStats = await getAdminOrderStats(env);
+    return json({ stats: { ...releaseStats, orderStats, orders: orderStats.total } });
   }
 
   if (path === "/api/v1/admin/webhook/setup" && request.method === "POST") {
