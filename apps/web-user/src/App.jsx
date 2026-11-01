@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { api, releaseDownloadUrl } from "./services/api.js";
+import FeatureCenter from "./FeatureCenter.jsx";
 
 const BRANDS = ["QQ88", "78WIN", "SC88", "C168", "CM88", "F8BET"];
 const MODULES = [
@@ -34,6 +35,7 @@ export default function App() {
   const [brand, setBrand] = useState(BRANDS[0]);
   const [accountLabel, setAccountLabel] = useState("");
   const [selectedModule, setSelectedModule] = useState(null);
+  const [selectedFeature, setSelectedFeature] = useState(null);
   const [orderTitle, setOrderTitle] = useState("");
   const [orderDescription, setOrderDescription] = useState("");
   const [quantity, setQuantity] = useState(1);
@@ -66,16 +68,19 @@ export default function App() {
   function openModule(item) {
     setError("");
     setNotice("");
-    if (!item.orderable) {
-      setSelectedModule(null);
-      setNotice(item.note || "Tính năng đang được hoàn thiện.");
-      return;
-    }
-    setSelectedModule(item);
-    setOrderTitle("Yêu cầu " + item.title);
-    setOrderDescription("");
-    setQuantity(1);
+    setSelectedModule(null);
+    setSelectedFeature(item.id);
     setTab("home");
+  }
+
+  async function refreshMemberData() {
+    if (!initData) return;
+    const [homeData, orderData] = await Promise.all([
+      api("/api/v1/home", {}, initData),
+      api("/api/v1/orders?limit=20", {}, initData)
+    ]);
+    setHome(homeData);
+    setOrders(orderData.orders || []);
   }
 
   async function submitOrder(event) {
@@ -213,6 +218,7 @@ export default function App() {
               </div>
             </section>
 
+            {selectedFeature && <FeatureCenter module={selectedFeature} initData={initData} onClose={() => setSelectedFeature(null)} onChanged={refreshMemberData} />}
             {selectedModule && <section className="request-panel">
               <div className="section-title"><div><span className="eyebrow">NEW SERVICE REQUEST</span><h2>{selectedModule.title}</h2></div><button className="close-button" onClick={() => setSelectedModule(null)} aria-label="Đóng">×</button></div>
               <p className="helper-copy">Đây là yêu cầu dịch vụ, chưa phải giao dịch thanh toán. Nhân viên sẽ kiểm tra, xác nhận thông tin và báo giá trước khi thực hiện.</p>
