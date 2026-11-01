@@ -94,8 +94,8 @@ export async function createOrder(env, userId, input, idempotencyKey) {
 
   const insertCreatedEvent = env.DB.prepare(
     `INSERT INTO order_events
-      (id, order_id, actor_user_id, from_status, to_status, event_key, note)
-     SELECT ?, id, user_id, NULL, 'pending', 'created', 'Người dùng tạo yêu cầu'
+      (id, order_id, actor_user_id, from_status, to_status, event_key, note, actor_type, actor_label)
+     SELECT ?, id, user_id, NULL, 'pending', 'created', 'Người dùng tạo yêu cầu', 'customer', 'Telegram user ' || user_id
        FROM orders
       WHERE user_id = ? AND idempotency_key = ? AND request_hash = ?
      ON CONFLICT(order_id, event_key) DO NOTHING`
@@ -248,7 +248,7 @@ export async function getAdminOrder(env, orderId) {
   if (!row) return null;
 
   const events = await env.DB.prepare(
-    `SELECT id, actor_type, actor_label, from_status, to_status, event_key, note, created_at
+    `SELECT id, actor_type, actor_label, from_status, to_status, note, created_at
        FROM order_events WHERE order_id = ? ORDER BY created_at ASC, rowid ASC`
   ).bind(orderId).all();
 
