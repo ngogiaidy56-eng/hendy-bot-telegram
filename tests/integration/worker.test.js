@@ -24,3 +24,21 @@ test("admin order queue is forbidden without admin credentials", async () => {
   const body = await response.json();
   assert.match(body.error, /quyền quản trị/i);
 });
+
+test("Telegram webhook rejects requests without the configured secret header", async () => {
+  const request = new Request("https://worker.example/telegram/webhook", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Telegram-Bot-Api-Secret-Token": "wrong-secret"
+    },
+    body: JSON.stringify({ update_id: 1 })
+  });
+  const response = await worker.fetch(request, {
+    DB: {},
+    STORAGE: {},
+    WEBHOOK_SECRET_TOKEN: "expected-secret"
+  });
+  assert.equal(response.status, 401);
+  assert.deepEqual(await response.json(), { error: "Unauthorized" });
+});

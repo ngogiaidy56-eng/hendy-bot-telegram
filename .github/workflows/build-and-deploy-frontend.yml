@@ -1,4 +1,5 @@
 name: Build and deploy Cloudflare Pages
+
 on:
   push:
     branches: [main]
@@ -17,54 +18,124 @@ on:
       - "packages/shared-types/**"
       - "pnpm-workspace.yaml"
       - "package.json"
+      - ".github/workflows/build-and-deploy-frontend.yml"
   workflow_dispatch:
+
 permissions:
   contents: read
+
 concurrency:
-  group: cloudflare-pages-${{ github.ref }}
+  group: hendy-pages-${{ github.ref }}
   cancel-in-progress: true
+
 jobs:
-  build-user:
-    name: Build and deploy web-user
+  build:
+    name: Build both Pages applications
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
         with:
           version: 9.15.5
-      - uses: actions/setup-node@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: pnpm install --no-frozen-lockfile
-      - name: Build user app
+
+      - name: Install workspace
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Build web-user
         run: pnpm --filter web-user build
         env:
           VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
-      - name: Deploy user Pages
-        if: github.event_name != 'pull_request'
-        run: pnpm exec wrangler pages deploy apps/web-user/dist --project-name hendy-web-user
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-  build-admin:
-    name: Build and deploy web-admin
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9.15.5
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: pnpm install --no-frozen-lockfile
-      - name: Build admin app
+
+      - name: Build web-admin
         run: pnpm --filter web-admin build
         env:
           VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
-      - name: Deploy admin Pages
-        if: github.event_name != 'pull_request'
-        run: pnpm exec wrangler pages deploy apps/web-admin/dist --project-name hendy-web-admin
+
+      - name: Verify both build outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s apps/web-user/dist/index.html
+          test -s apps/web-admin/dist/index.html
+          echo "Both Pages applications produced index.html."
+
+      - name: Validate Pages deployment settings
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CF_API_TOKEN" || { echo "::error::Missing GitHub Actions secret CF_API_TOKEN"; exit 1; }
+          test -n "$CF_ACCOUNT_ID" || { echo "::error::Missing GitHub Actions secret CF_ACCOUNT_ID"; exit 1; }
+          [[ "$VITE_API_BASE_URL" == https://* ]] || { echo "::error::Set VITE_API_BASE_URL to the HTTPS Worker URL"; exit 1; }
+          pnpm exec wrangler whoami
+
+      - name: Ensure both Cloudflare Pages projects exist
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ensure_project() {
+            local project="$1"
+            local response="/tmp/pages-${project}.json"
+            local status
+            status="$(curl -sS -o "$response" -w '%{http_code}' \
+              -H "Authorization: Bearer $CF_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/pages/projects/$project")"
+            if [ "$status" = "200" ]; then
+              jq -e '.success == true' "$response" >/dev/null
+              echo "Pages project already exists: $project"
+            elif [ "$status" = "404" ]; then
+              curl --fail-with-body --silent --show-error \
+                -X POST \
+                -H "Authorization: Bearer $CF_API_TOKEN" \
+                -H "Content-Type: application/json" \
+                --data "{\"name\":\"$project\",\"production_branch\":\"main\"}" \
+                "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/pages/projects"
+              echo "Created Pages project: $project"
+            else
+              cat "$response" >&2
+              echo "::error::Unable to verify Pages project $project (HTTP $status)"
+              exit 1
+            fi
+          }
+          ensure_project hendy-web-user
+          ensure_project hendy-web-admin
+
+      - name: Deploy web-user Pages
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: pnpm exec wrangler pages deploy apps/web-user/dist --project-name hendy-web-user --branch main
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+
+      - name: Deploy web-admin Pages
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: pnpm exec wrangler pages deploy apps/web-admin/dist --project-name hendy-web-admin --branch main
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+
+      - name: Smoke test Pages websites
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --retry 8 --retry-delay 5 --retry-all-errors https://hendy-web-user.pages.dev/
+          curl --fail --silent --show-error --retry 8 --retry-delay 5 --retry-all-errors https://hendy-web-admin.pages.dev/

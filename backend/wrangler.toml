@@ -7,6 +7,7 @@ minify = true
 [vars]
 ENVIRONMENT = "production"
 WEBAPP_URL = "https://hendy-web-user.pages.dev"
+PUBLIC_API_BASE_URL = "REPLACE_WITH_PUBLIC_API_BASE_URL"
 ALLOWED_ORIGINS = "https://hendy-web-user.pages.dev,https://hendy-web-admin.pages.dev"
 
 [[d1_databases]]
