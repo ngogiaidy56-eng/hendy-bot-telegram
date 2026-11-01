@@ -32,6 +32,7 @@ export default function App() {
   const [stats, setStats] = useState(null);
   const [releases, setReleases] = useState([]);
   const [orders, setOrders] = useState([]);
+  const [topups, setTopups] = useState([]);
   const [orderStats, setOrderStats] = useState(null);
   const [queueTotal, setQueueTotal] = useState(0);
   const [queueStatus, setQueueStatus] = useState("all");
@@ -54,6 +55,21 @@ export default function App() {
     setOrders(result.orders || []);
     setQueueTotal(Number(result.total || 0));
     setOrderStats(result.stats || null);
+  }
+
+  async function loadTopups(currentToken = token) { const result = await adminApi("/api/v1/admin/wallet/topups?status=pending", currentToken); setTopups(result.topups || []); }
+
+  async function reviewTopup(item, status) {
+    setBusy(true); setError(""); setNotice("");
+    try {
+      await adminApi("/api/v1/admin/wallet/topups/" + encodeURIComponent(item.id) + "/review", token, {
+        method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() },
+        body: JSON.stringify({ status, note: status === "confirmed" ? "Đã đối chiếu giao dịch thực nhận" : "Không xác minh được giao dịch" })
+      });
+      await loadTopups();
+      setNotice(status === "confirmed" ? "Đã xác nhận nạp tiền và ghi sổ ví." : "Đã từ chối yêu cầu nạp tiền.");
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
   }
 
   async function refresh(currentToken = token) {
@@ -191,7 +207,7 @@ export default function App() {
         <div className="side-label">WORKSPACE</div>
         {[
           ["overview", "▦", "Tổng quan"],
-          ["orders", "▤", "Hàng đợi đơn hàng"],
+          ["orders", "▤", "Hàng đợi đơn hàng"],\n          ["wallet", "₫", "Xác nhận nạp ví"],
           ["releases", "⇧", "Phát hành ứng dụng"],
           ["webhook", "⌁", "Telegram webhook"]
         ].map(([id, icon, label]) => <button key={id} className={"nav-item " + (section === id ? "active" : "")} onClick={() => setSection(id)}>
@@ -201,7 +217,7 @@ export default function App() {
       </aside>
       <section className="main-area">
         <header className="admin-header">
-          <div><span className="crumb">HENDY / ADMIN</span><h1>{section === "orders" ? "Hàng đợi đơn hàng" : section === "releases" ? "Phát hành ứng dụng" : section === "webhook" ? "Telegram webhook" : "Trung tâm quản trị"}</h1></div>
+          <div><span className="crumb">HENDY / ADMIN</span><h1>{section === "orders" ? "Hàng đợi đơn hàng" : section === "wallet" ? "Xác nhận nạp ví" : section === "releases" ? "Phát hành ứng dụng" : section === "webhook" ? "Telegram webhook" : "Trung tâm quản trị"}</h1></div>
           <span className="secure">● PRIVATE CONSOLE</span>
         </header>
         {error && <div className="alert error">{error}</div>}
@@ -275,6 +291,16 @@ export default function App() {
             <div className="event-history"><h3>Lịch sử xử lý</h3>{(selectedOrder.events || []).map((event) => <div className="event-row" key={event.id}>
               <span className="event-bullet" /><div><b>{event.from_status ? STATUS_LABEL[event.from_status] + " → " : "Tạo mới → "}{STATUS_LABEL[event.to_status] || event.to_status}</b><small>{event.actor_label || event.actor_type} · {new Date(event.created_at).toLocaleString("vi-VN")}</small>{event.note && <p>{event.note}</p>}</div>
             </div>)}</div>
+          </section>}
+
+          {section === "wallet" && <section className="card">
+            <div className="card-heading"><div><div className="section-kicker">WALLET OPERATIONS</div><h2>Yêu cầu nạp tiền đang chờ</h2></div><button className="secondary small" onClick={() => loadTopups()} disabled={busy}>↻ Làm mới</button></div>
+            <p className="hint">Chỉ xác nhận sau khi đối chiếu tiền thực nhận trong tài khoản ngân hàng. Thao tác xác nhận cộng số dư một lần và ghi sổ D1; không xác nhận dựa trên ảnh chụp do khách gửi.</p>
+            <div className="release-table">{topups.length ? topups.map(item => <div className="release-line" key={item.id}>
+              <b>{money(item.amount)}</b><span>{item.customer_name || item.user_id}</span><small>{item.payment_reference} · {item.created_at}</small>
+              <button className="primary-action" disabled={busy} onClick={() => reviewTopup(item,"confirmed")}>Đã nhận tiền</button>
+              <button className="danger-action" disabled={busy} onClick={() => reviewTopup(item,"rejected")}>Từ chối</button>
+            </div>) : <p className="hint">Không có yêu cầu nạp tiền chờ xử lý.</p>}</div>
           </section>}
 
           {section === "releases" && <>
