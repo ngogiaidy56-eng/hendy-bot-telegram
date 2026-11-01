@@ -9,7 +9,7 @@ export default function FeatureCenter({ module, initData, onClose, onChanged }) 
   const [vip,setVip] = useState(null);
   const [referral,setReferral] = useState(null);
   const [wallet,setWallet] = useState(null);
-  const [tickets,setTickets] = useState([]);
+  const [tickets,setTickets] = useState([]);\n  const [profile,setProfile] = useState(null);\n  const [activity,setActivity] = useState([]);
   const [busy,setBusy] = useState(false);
   const [error,setError] = useState("");
   const [notice,setNotice] = useState("");
@@ -28,7 +28,7 @@ export default function FeatureCenter({ module, initData, onClose, onChanged }) 
       } else if (module === "vip") setVip(await api("/api/v1/vip",{},initData));
       else if (module === "referral") setReferral(await api("/api/v1/referral",{},initData));
       else if (module === "wallet") setWallet(await api("/api/v1/wallet",{},initData));
-      else if (module === "support") { const result=await api("/api/v1/support/tickets",{},initData); setTickets(result.tickets || []); }
+      else if (module === "support") { const [result,me,history]=await Promise.all([api("/api/v1/support/tickets",{},initData),api("/api/v1/me",{},initData),api("/api/v1/activity",{},initData)]); setTickets(result.tickets || []); setProfile(me.user || null); setActivity(history.activity || []); }
     } catch(e) { setError(e.message); }
   }
   useEffect(() => { load(); }, [module,initData]);
@@ -80,6 +80,6 @@ export default function FeatureCenter({ module, initData, onClose, onChanged }) 
 
     {module === "giftcode" && <form className="request-form" onSubmit={e=>{e.preventDefault();run(async()=>{const r=await api("/api/v1/giftcodes/redeem",{method:"POST",headers:{"Idempotency-Key":key()},body:JSON.stringify({code:giftcode})},initData);setNotice("Đổi mã thành công. Voucher nhận được: "+r.rewardVoucher);setGiftcode("");onChanged?.();});}}><label>Mã Giftcode<input value={giftcode} onChange={e=>setGiftcode(e.target.value.toUpperCase())} maxLength={40} placeholder="HENDY-XXXX-XXXX-XXXX" required/></label><button disabled={busy}>Đổi Giftcode</button><p className="footnote">Mỗi tài khoản chỉ đổi một lần cho mỗi mã. Mã hết hạn hoặc hết lượt sẽ bị từ chối.</p></form>}
 
-    {module === "support" && <><form className="request-form" onSubmit={e=>{e.preventDefault();run(async()=>{await api("/api/v1/support/tickets",{method:"POST",headers:{"Idempotency-Key":key()},body:JSON.stringify({category:"general",subject,message})},initData);setNotice("Đã gửi yêu cầu hỗ trợ.");setSubject("");setMessage("");const r=await api("/api/v1/support/tickets",{},initData);setTickets(r.tickets||[]);});}}><label>Tiêu đề<input value={subject} onChange={e=>setSubject(e.target.value)} minLength={4} maxLength={120} required/></label><label className="full">Nội dung<textarea value={message} onChange={e=>setMessage(e.target.value)} minLength={5} maxLength={3000} required/></label><button disabled={busy}>Gửi hỗ trợ</button></form><h3>Lịch sử hỗ trợ</h3>{tickets.map(t=><div className="feature-history" key={t.id}><b>{t.ticket_number} · {t.subject}</b><span>{t.status} · {t.updated_at}</span></div>)}</>}
+    {module === "support" && <><form className="request-form" onSubmit={e=>{e.preventDefault();run(async()=>{await api("/api/v1/support/tickets",{method:"POST",headers:{"Idempotency-Key":key()},body:JSON.stringify({category:"general",subject,message})},initData);setNotice("Đã gửi yêu cầu hỗ trợ.");setSubject("");setMessage("");const r=await api("/api/v1/support/tickets",{},initData);setTickets(r.tickets||[]);});}}><label>Tiêu đề<input value={subject} onChange={e=>setSubject(e.target.value)} minLength={4} maxLength={120} required/></label><label className="full">Nội dung<textarea value={message} onChange={e=>setMessage(e.target.value)} minLength={5} maxLength={3000} required/></label><button disabled={busy}>Gửi hỗ trợ</button></form><h3>Hồ sơ thành viên</h3>{profile && <div className="feature-history"><b>{profile.name || "Thành viên"} · Telegram {profile.id}</b><span>Số dư: {money(profile.balance)} · Voucher: {profile.voucher || 0}</span></div>}<h3>Lịch sử hỗ trợ</h3>{tickets.map(t=><div className="feature-history" key={t.id}><b>{t.ticket_number} · {t.subject}</b><span>{t.status} · {t.updated_at}</span></div>)}<h3>Lịch sử hoạt động</h3>{activity.map(item=><div className="feature-history" key={item.category+item.id}><b>{item.category} · {item.description}</b><span>{item.status} · {item.created_at}</span></div>)}</>}
   </section>;
 }
