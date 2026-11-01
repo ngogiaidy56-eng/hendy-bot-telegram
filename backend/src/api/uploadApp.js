@@ -34,7 +34,8 @@ export async function handleUploadApp(request, env) {
       platform, version, r2Path: key, releaseNotes: form.get("releaseNotes"),
       fileName: originalName, fileSize: file.size
     });
-    return json({ success: true, release }, 201);
+    const { r2_path, ...publicRelease } = release;
+    return json({ success: true, release: publicRelease }, 201);
   } catch (error) {
     await env.STORAGE.delete(key);
     throw error;
