@@ -184,7 +184,7 @@ export async function getOrderStats(env, userId) {
 
 
 export const ORDER_TRANSITIONS = Object.freeze({
-  pending: ["confirmed", "cancelled"],
+  pending: ["cancelled"],
   confirmed: ["processing", "cancelled"],
   processing: ["completed", "cancelled"],
   completed: [],
@@ -261,8 +261,13 @@ export async function listAdminOrders(env, options = {}) {
 
 export async function getAdminOrder(env, orderId) {
   const row = await env.DB.prepare(
-    `SELECT o.*, u.name AS customer_name, u.created_at AS customer_created_at
+    `SELECT o.*, u.name AS customer_name, u.created_at AS customer_created_at,
+       q.id AS quote_id, q.amount AS quote_amount, q.currency AS quote_currency,
+       q.note AS quote_note, q.status AS quote_status, q.expires_at AS quote_expires_at
        FROM orders o LEFT JOIN users u ON u.id = o.user_id
+       LEFT JOIN order_quotes q ON q.id = (
+         SELECT q2.id FROM order_quotes q2 WHERE q2.order_id = o.id ORDER BY q2.revision DESC LIMIT 1
+       )
       WHERE o.id = ?`
   ).bind(orderId).first();
   if (!row) return null;
