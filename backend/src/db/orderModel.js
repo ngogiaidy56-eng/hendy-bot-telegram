@@ -58,7 +58,15 @@ function presentOrder(row) {
     pricingStatus: "awaiting_quote",
     status: row.status,
     createdAt: row.created_at,
-    updatedAt: row.updated_at
+    updatedAt: row.updated_at,
+    quote: row.quote_id ? {
+      id: row.quote_id,
+      amount: Number(row.quote_amount || 0),
+      currency: row.quote_currency || "VND",
+      note: row.quote_note || "",
+      status: row.quote_status,
+      expiresAt: row.quote_expires_at || null
+    } : null
   };
 }
 
@@ -125,11 +133,19 @@ export async function listOrders(env, userId, options = {}) {
   if (status) {
     if (!ORDER_STATUSES.has(status)) throw new Error("Trạng thái đơn hàng không hợp lệ.");
     result = await env.DB.prepare(
-      "SELECT * FROM orders WHERE user_id = ? AND status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?"
+      `SELECT o.*, q.id AS quote_id, q.amount AS quote_amount, q.currency AS quote_currency,
+        q.note AS quote_note, q.status AS quote_status, q.expires_at AS quote_expires_at
+        FROM orders o LEFT JOIN order_quotes q ON q.id = (
+          SELECT q2.id FROM order_quotes q2 WHERE q2.order_id = o.id ORDER BY q2.revision DESC LIMIT 1
+        ) WHERE o.user_id = ? AND o.status = ? ORDER BY o.created_at DESC LIMIT ? OFFSET ?`
     ).bind(safeUserId, status, limit, offset).all();
   } else {
     result = await env.DB.prepare(
-      "SELECT * FROM orders WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?"
+      `SELECT o.*, q.id AS quote_id, q.amount AS quote_amount, q.currency AS quote_currency,
+        q.note AS quote_note, q.status AS quote_status, q.expires_at AS quote_expires_at
+        FROM orders o LEFT JOIN order_quotes q ON q.id = (
+          SELECT q2.id FROM order_quotes q2 WHERE q2.order_id = o.id ORDER BY q2.revision DESC LIMIT 1
+        ) WHERE o.user_id = ? ORDER BY o.created_at DESC LIMIT ? OFFSET ?`
     ).bind(safeUserId, limit, offset).all();
   }
   return (result.results || []).map(presentOrder);
@@ -139,7 +155,11 @@ export async function getOrderForUser(env, userId, orderId) {
   const safeUserId = parseTelegramId(userId);
   if (!safeUserId) throw new Error("Telegram user ID không hợp lệ.");
   const row = await env.DB.prepare(
-    "SELECT * FROM orders WHERE id = ? AND user_id = ?"
+    `SELECT o.*, q.id AS quote_id, q.amount AS quote_amount, q.currency AS quote_currency,
+      q.note AS quote_note, q.status AS quote_status, q.expires_at AS quote_expires_at
+      FROM orders o LEFT JOIN order_quotes q ON q.id = (
+        SELECT q2.id FROM order_quotes q2 WHERE q2.order_id = o.id ORDER BY q2.revision DESC LIMIT 1
+      ) WHERE o.id = ? AND o.user_id = ?`
   ).bind(orderId, safeUserId).first();
   return presentOrder(row);
 }
@@ -251,10 +271,14 @@ export async function getAdminOrder(env, orderId) {
     `SELECT id, actor_type, actor_label, from_status, to_status, note, created_at
        FROM order_events WHERE order_id = ? ORDER BY created_at ASC, rowid ASC`
   ).bind(orderId).all();
+  const quotes = await env.DB.prepare(
+    "SELECT id,revision,amount,currency,note,status,expires_at,created_at,responded_at FROM order_quotes WHERE order_id = ? ORDER BY revision DESC"
+  ).bind(orderId).all();
 
   return {
     order: presentAdminOrder(row),
-    events: events.results || []
+    events: events.results || [],
+    quotes: quotes.results || []
   };
 }
 
@@ -366,4 +390,98 @@ export async function updateOrderStatus(env, orderId, actor, input, idempotencyK
   }
 
   return { ...(await getAdminOrder(env, orderId)), duplicate: false };
+}
+
+
+export async function createOrderQuote(env, orderId, actor, input, idempotencyValue) {
+  if (!/^[0-9a-f-]{36}$/i.test(String(orderId || ""))) fail("Mã đơn hàng không hợp lệ.");
+  const key = String(idempotencyValue || "").trim();
+  if (!/^[A-Za-z0-9._:-]{8,128}$/.test(key)) fail("Thiếu hoặc sai Idempotency-Key cho báo giá.");
+  const amount = Number(input?.amount);
+  const rawNote = String(input?.note ?? "").trim();
+  const expiresAt = input?.expiresAt ? String(input.expiresAt) : null;
+  if (!Number.isSafeInteger(amount) || amount < 1 || amount > 1000000000000) fail("Giá báo phải là số nguyên VND dương.");
+  if (rawNote.length > 500) fail("Ghi chú báo giá vượt quá 500 ký tự.");
+  if (expiresAt && Number.isNaN(Date.parse(expiresAt))) fail("Thời điểm hết hạn báo giá không hợp lệ.");
+  const note = safeText(rawNote, 500);
+  const currency = "VND";
+  const requestHash = await hashRequest({ amount, note, expiresAt, currency });
+
+  const previous = await env.DB.prepare("SELECT * FROM order_quotes WHERE order_id = ? AND idempotency_key = ?").bind(orderId,key).first();
+  if (previous) {
+    if (previous.request_hash !== requestHash) fail("Idempotency-Key đã được dùng cho báo giá khác.", 409);
+    return { ...(await getAdminOrder(env, orderId)), duplicate: true };
+  }
+  const order = await env.DB.prepare("SELECT id,status,user_id FROM orders WHERE id = ?").bind(orderId).first();
+  if (!order) fail("Không tìm thấy đơn hàng.", 404);
+  if (order.status !== "pending") fail("Chỉ đơn đang chờ tiếp nhận mới được báo giá.", 409);
+  const active = await env.DB.prepare("SELECT id FROM order_quotes WHERE order_id = ? AND status = 'sent'").bind(orderId).first();
+  if (active) fail("Đơn hàng đang có một báo giá chờ khách phản hồi.", 409);
+  const revision = await env.DB.prepare("SELECT COALESCE(MAX(revision),0)+1 AS next FROM order_quotes WHERE order_id = ?").bind(orderId).first();
+  const quoteId = randomId();
+  const eventKey = "quote:" + key;
+  const actorLabel = safeText(actor?.id || "admin",80);
+
+  try {
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO order_quotes(id,order_id,user_id,revision,amount,currency,note,status,idempotency_key,request_hash,expires_at)
+         SELECT ?,?,?,?,?,?,?,'sent',?,?,? FROM orders
+          WHERE id = ? AND status = 'pending'
+            AND NOT EXISTS (SELECT 1 FROM order_quotes WHERE order_id = ? AND status = 'sent')
+         ON CONFLICT(order_id,idempotency_key) DO NOTHING`
+      ).bind(quoteId,orderId,order.user_id,Number(revision?.next || 1),amount,currency,note,key,requestHash,expiresAt,orderId,orderId),
+      env.DB.prepare(
+        "UPDATE orders SET total_amount = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'pending' AND changes() = 1"
+      ).bind(amount,orderId),
+      env.DB.prepare(
+        `INSERT INTO order_events(id,order_id,actor_user_id,from_status,to_status,event_key,note,actor_type,actor_label)
+         SELECT ?,id,NULL,'pending','pending',?,?, 'admin',? FROM orders
+          WHERE id = ? AND status = 'pending' AND total_amount = ? AND changes() = 1
+         ON CONFLICT(order_id,event_key) DO NOTHING`
+      ).bind(randomId(),eventKey,"Báo giá " + amount + " VND. " + note,actorLabel,orderId,amount)
+    ]);
+  } catch (error) {
+    const competing = await env.DB.prepare("SELECT id FROM order_quotes WHERE order_id = ? AND status = 'sent'").bind(orderId).first();
+    if (competing) fail("Một báo giá khác vừa được gửi. Hãy tải lại đơn hàng.", 409);
+    throw error;
+  }
+  const saved = await env.DB.prepare("SELECT id FROM order_quotes WHERE order_id = ? AND idempotency_key = ?").bind(orderId,key).first();
+  if (!saved) fail("Không thể lưu báo giá. Hãy tải lại đơn hàng.", 409);
+  return { ...(await getAdminOrder(env, orderId)), duplicate: false };
+}
+
+export async function respondToOrderQuote(env, userId, orderId, quoteId, decision) {
+  const id = parseTelegramId(userId);
+  if (!id) fail("Telegram user ID không hợp lệ.");
+  if (!["accepted","rejected"].includes(decision)) fail("Lựa chọn báo giá không hợp lệ.");
+  const quote = await env.DB.prepare(
+    "SELECT id,order_id,user_id,status,amount,note,expires_at FROM order_quotes WHERE id = ? AND order_id = ? AND user_id = ?"
+  ).bind(quoteId,orderId,id).first();
+  if (!quote) fail("Không tìm thấy báo giá.",404);
+  if (quote.status === decision) return { success:true,duplicate:true,decision };
+  if (quote.status !== "sent") fail("Báo giá không còn chờ phản hồi.",409);
+  if (quote.expires_at && Date.parse(quote.expires_at) <= Date.now()) fail("Báo giá đã hết hạn.",409);
+
+  const nextOrderStatus = decision === "accepted" ? "confirmed" : "pending";
+  const eventKey = "quote-response:" + quoteId + ":" + decision;
+  const note = decision === "accepted" ? "Khách hàng chấp nhận báo giá." : "Khách hàng từ chối báo giá.";
+  await env.DB.batch([
+    env.DB.prepare(
+      "UPDATE order_quotes SET status = ?, responded_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'sent'"
+    ).bind(decision,quoteId),
+    env.DB.prepare(
+      "UPDATE orders SET status = ?, total_amount = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ? AND status = 'pending' AND changes() = 1"
+    ).bind(nextOrderStatus,Number(quote.amount),orderId,id),
+    env.DB.prepare(
+      `INSERT INTO order_events(id,order_id,actor_user_id,from_status,to_status,event_key,note,actor_type,actor_label)
+       SELECT ?,id,?,'pending',?,?,?,'customer','Telegram user ' || ?
+        FROM orders WHERE id = ? AND user_id = ? AND status = ? AND changes() = 1
+       ON CONFLICT(order_id,event_key) DO NOTHING`
+    ).bind(randomId(),id,nextOrderStatus,eventKey,note,id,orderId,id,nextOrderStatus)
+  ]);
+  const saved = await env.DB.prepare("SELECT status FROM order_quotes WHERE id = ?").bind(quoteId).first();
+  const updated = await env.DB.prepare("SELECT status FROM orders WHERE id = ? AND user_id = ?").bind(orderId,id).first();
+  if (saved?.status !== decision || updated?.status !== nextOrderStatus) fail("Đơn hàng vừa được cập nhật. Hãy tải lại dữ liệu.",409);
+  return { success:true,duplicate:false,decision,order:await getOrderForUser(env,id,orderId) };
 }
