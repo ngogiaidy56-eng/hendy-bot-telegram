@@ -296,10 +296,16 @@ export async function updateOrderStatus(env, orderId, actor, input, idempotencyK
   if (!ORDER_STATUSES.has(expectedStatus) || !ORDER_STATUSES.has(nextStatus)) {
     throw new Error("Trạng thái đơn hàng không hợp lệ.");
   }
-  if (rawNote.length > 500) throw new Error("Ghi chú xử lý vượt quá 500 ký tự.");
+  if (rawNote.length > 500) {
+    const error = new Error("Ghi chú xử lý vượt quá 500 ký tự.");
+    error.status = 400;
+    throw error;
+  }
   const note = safeText(rawNote, 500);
   if (!canTransitionOrder(expectedStatus, nextStatus)) {
-    throw new Error("Không cho phép chuyển từ " + expectedStatus + " sang " + nextStatus + ".");
+    const error = new Error("Không cho phép chuyển từ " + expectedStatus + " sang " + nextStatus + ".");
+    error.status = 400;
+    throw error;
   }
 
   const eventKey = "admin:" + key;

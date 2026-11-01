@@ -206,7 +206,7 @@ async function route(request, env) {
     return json({ ...result, stats: await getAdminOrderStats(env) });
   }
 
-  const adminOrderMatch = path.match(/^\\/api\\/v1\\/admin\\/orders\\/([0-9a-f-]{36})(?:\\/(status))?$/i);
+  const adminOrderMatch = path.match(new RegExp("^/api/v1/admin/orders/([0-9a-f-]{36})(?:/(status))?$", "i"));
   if (adminOrderMatch && request.method === "GET" && !adminOrderMatch[2]) {
     await requireAdmin(request, env);
     const result = await getAdminOrder(env, adminOrderMatch[1]);
@@ -218,7 +218,7 @@ async function route(request, env) {
     const admin = await requireAdmin(request, env);
     const body = await readJsonLimited(request);
     const result = await updateOrderStatus(env, adminOrderMatch[1], admin, body, request.headers.get("Idempotency-Key"));
-    return json(result, result.duplicate ? 200 : 200);
+    return json(result, 200);
   }
 
   if (path === "/api/v1/admin/releases" && request.method === "POST") {
