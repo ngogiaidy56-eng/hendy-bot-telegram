@@ -138,3 +138,30 @@ Migration 0003 phải được áp dụng trước khi sử dụng API đơn hà
     pnpm exec wrangler d1 migrations apply DB --remote --config backend/wrangler.toml
 
 Ví điện tử, xác nhận thanh toán, nạp/rút, OTP/proxy thực tế, Giftcode và hoa hồng REF chưa được bật. Các bảng giao dịch trong migration chỉ là nền dữ liệu; cần xác minh chữ ký webhook, đối soát và idempotency của nhà cung cấp trước khi xử lý tiền thật.
+
+
+## Hàng đợi đơn hàng trong Admin
+
+Admin API yêu cầu Bearer `ADMIN_API_TOKEN` hoặc Telegram initData thuộc `ADMIN_IDS`; không có API nào cấp quyền chỉ dựa vào URL Pages.
+
+- `GET /api/v1/admin/orders?status=pending&module=all&limit=100` — danh sách có lọc trạng thái/module và tìm kiếm mã đơn, tiêu đề, Telegram ID hoặc tên.
+- `GET /api/v1/admin/orders/:id` — chi tiết đơn và nhật ký xử lý.
+- `POST /api/v1/admin/orders/:id/status` — chuyển trạng thái, cần `Idempotency-Key`.
+
+Ví dụ chuyển đơn từ chờ tiếp nhận sang đã xác nhận:
+
+    curl -X POST "$VITE_API_BASE_URL/api/v1/admin/orders/ORDER_UUID/status" \
+      -H "Authorization: Bearer $ADMIN_API_TOKEN" \
+      -H "Idempotency-Key: admin-action-001" \
+      -H "Content-Type: application/json" \
+      -d '{"expectedStatus":"pending","status":"confirmed","note":"Đã kiểm tra thông tin yêu cầu"}'
+
+Luồng trạng thái được giới hạn:
+- pending → confirmed hoặc cancelled
+- confirmed → processing hoặc cancelled
+- processing → completed hoặc cancelled
+- completed / cancelled là trạng thái cuối.
+
+Migration 0004 bổ sung loại người thực hiện và nhãn admin vào nhật ký, không xóa đơn cũ. D1 batch thực hiện cập nhật trạng thái + ghi event trong cùng transaction; câu UPDATE có điều kiện theo trạng thái hiện tại để tránh hai nhân viên ghi đè lẫn nhau. Cùng một Idempotency-Key chỉ có thể phát lại đúng thao tác đã ghi.
+
+Admin web có hàng đợi, lọc trạng thái/module, tìm kiếm, chi tiết đơn, lịch sử và nút xác nhận/đang xử lý/hoàn tất/hủy. Admin không thể chỉnh tiền ở màn hình này; báo giá, thanh toán, đối soát và tích hợp nhà cung cấp nằm ở giai đoạn tiếp theo.
