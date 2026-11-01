@@ -1,19 +1,19 @@
 {
-  "name": "hendy-bot-cloudflare-monorepo",
+  "name": "hendy-bot-tele-cloudflare",
   "private": true,
-  "engines": {
-    "node": ">=20.0.0"
-  },
+  "version": "2.0.0",
+  "packageManager": "pnpm@9.15.5",
+  "engines": { "node": ">=20.0.0" },
   "scripts": {
-    "dev": "pnpm --parallel -r run dev",
-    "build": "pnpm --parallel -r run build",
-    "deploy:web-user": "pnpm -F web-user run deploy",
-    "deploy:web-admin": "pnpm -F web-admin run deploy",
-    "deploy:backend": "pnpm -F backend run deploy",
-    "db:migrate:local": "pnpm -F backend run db:migrate:local",
-    "db:migrate:remote": "pnpm -F backend run db:migrate:remote"
+    "dev": "pnpm --parallel --filter web-user --filter web-admin --filter backend run dev",
+    "build": "pnpm --filter web-user build && pnpm --filter web-admin build",
+    "test": "node --test",
+    "deploy:web-user": "pnpm --filter web-user deploy",
+    "deploy:web-admin": "pnpm --filter web-admin deploy",
+    "deploy:backend": "wrangler deploy --config backend/wrangler.toml",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local --config backend/wrangler.toml",
+    "db:migrate:remote": "wrangler d1 migrations apply DB --remote --config backend/wrangler.toml",
+    "check": "pnpm build && pnpm test"
   },
-  "devDependencies": {
-    "wrangler": "^3.0.0"
-  }
+  "devDependencies": { "wrangler": "^4.40.0" }
 }

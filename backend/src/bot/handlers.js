@@ -1,30 +1,25 @@
-import { getUser, updateLinkedAccounts } from '../db/userModel.js';
+import { addLinkedAccount } from "../db/userModel.js";
+import { sendMessage } from "./telegram.js";
 
-export function setupBotHandlers(bot) {
-  bot.on('web_app_data', async (ctx) => {
-    try {
-      const chatId = ctx.chat.id.toString();
-      const u = await getUser(ctx.env, chatId);
-      const data = JSON.parse(ctx.message.web_app_data.data);
+export async function handleWebAppData(update, env) {
+  const message = update.message;
+  const raw = message?.web_app_data?.data;
+  if (!raw) return false;
+  let data;
+  try { data = JSON.parse(raw); }
+  catch {
+    await sendMessage(env, message.chat.id, "Dữ liệu Mini App không hợp lệ.");
+    return true;
+  }
 
-      if (data.action === 'link_account') {
-        const { brand, tk, mk } = data;
-        if (!u.linked_accounts[brand]) u.linked_accounts[brand] = [];
-        
-        if (u.linked_accounts[brand].some(a => a.tk.toLowerCase() === tk.toLowerCase())) {
-          return ctx.reply(`😅 Tài khoản \`${tk}\` đã có sẵn tại sảnh ${brand}.`, { parse_mode: 'Markdown' });
-        }
-
-        u.linked_accounts[brand].push({ tk, mk, miniCode: tk });
-        await updateLinkedAccounts(ctx.env, chatId, u.linked_accounts);
-
-        ctx.reply(`🥰 Đã liên kết \`${tk}\` tại sảnh \`${brand}\`.`, { 
-          parse_mode: 'Markdown',
-          reply_markup: { inline_keyboard: [[{ text: "📜 Quản lý tài khoản", callback_data: "v2_links" }]] }
-        });
-      }
-    } catch (error) {
-      console.error("Lỗi Web App Data:", error);
-    }
-  });
+  if ("mk" in data || "password" in data || "otp" in data) {
+    await sendMessage(env, message.chat.id, "Bot không nhận mật khẩu hoặc OTP. Chỉ sử dụng mã tài khoản.");
+    return true;
+  }
+  if (data.action === "link_account") {
+    await addLinkedAccount(env, message.from.id, String(data.brand || ""), data.accountLabel || data.tk);
+    await sendMessage(env, message.chat.id, "Đã lưu mã tài khoản. Không có mật khẩu nào được thu thập hoặc lưu.");
+    return true;
+  }
+  return false;
 }

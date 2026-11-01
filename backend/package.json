@@ -1,15 +1,16 @@
 {
-  "name": "backend",
-  "version": "1.0.0",
+  "name": "hendy-bot-backend",
+  "private": true,
+  "version": "2.0.0",
   "type": "module",
   "main": "src/index.js",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "db:migrate:local": "wrangler d1 execute hendy_bot_db --local --file=../packages/db-schema/migrations/0001_initial.sql",
-    "db:migrate:remote": "wrangler d1 execute hendy_bot_db --remote --file=../packages/db-schema/migrations/0001_initial.sql"
+    "dev": "wrangler dev --config wrangler.toml",
+    "deploy": "wrangler deploy --config wrangler.toml",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local --config wrangler.toml",
+    "db:migrate:remote": "wrangler d1 migrations apply DB --remote --config wrangler.toml",
+    "test": "node --test ../tests"
   },
-  "dependencies": {
-    "telegraf": "^4.16.3"
-  }
+  "dependencies": {},
+  "devDependencies": {}
 }
