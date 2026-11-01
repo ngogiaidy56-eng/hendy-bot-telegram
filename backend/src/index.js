@@ -217,7 +217,11 @@ async function route(request, env) {
   if (path === "/api/v1/home" && request.method === "GET") {
     const telegramUser = await authenticateTelegramRequest(request, env);
     const user = await upsertUser(env, telegramUser.id, telegramUser.first_name || "Khách");
-    const orderSummary = await getOrderStats(env, telegramUser.id);
+    const [orderSummary, vipProfile] = await Promise.all([
+      getOrderStats(env, telegramUser.id),
+      getVipProfile(env, telegramUser.id)
+    ]);
+    const currentTier = vipProfile.tiers.find((tier) => tier.code === vipProfile.currentTier.code) || null;
     return json({
       user: {
         id: user.id,
@@ -226,7 +230,13 @@ async function route(request, env) {
         voucher: Number(user.voucher || 0),
         createdAt: user.created_at
       },
-      membership: { tier: "Cơ bản", status: "active" },
+      membership: {
+        tier: vipProfile.currentTier.name,
+        code: vipProfile.currentTier.code,
+        points: vipProfile.points,
+        benefits: currentTier?.benefits || [],
+        status: "active"
+      },
       orderSummary,
       serverTime: new Date().toISOString()
     });
