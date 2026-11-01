@@ -16,7 +16,7 @@ const MODULE_LABEL = {
   vip: "VIP"
 };
 const NEXT_STATUSES = {
-  pending: ["confirmed", "cancelled"],
+  pending: ["cancelled"],
   confirmed: ["processing", "cancelled"],
   processing: ["completed", "cancelled"],
   completed: [],
@@ -32,6 +32,9 @@ export default function App() {
   const [stats, setStats] = useState(null);
   const [releases, setReleases] = useState([]);
   const [orders, setOrders] = useState([]);
+  const [topups, setTopups] = useState([]);
+  const [catalogItems, setCatalogItems] = useState([]);
+  const [catalogDraft, setCatalogDraft] = useState({ module: "app_tool", slug: "", title: "", description: "", unitPrice: "", durationDays: "", stock: "" });
   const [orderStats, setOrderStats] = useState(null);
   const [queueTotal, setQueueTotal] = useState(0);
   const [queueStatus, setQueueStatus] = useState("all");
@@ -54,6 +57,24 @@ export default function App() {
     setOrders(result.orders || []);
     setQueueTotal(Number(result.total || 0));
     setOrderStats(result.stats || null);
+  }
+
+  async function loadTopups(currentToken = token) { const result = await adminApi("/api/v1/admin/wallet/topups?status=pending", currentToken); setTopups(result.topups || []); }
+  async function loadCatalog(currentToken = token) { const result = await adminApi("/api/v1/admin/catalog", currentToken); setCatalogItems(result.items || []); }
+  async function saveCatalog(event) { event.preventDefault(); setBusy(true); setError(""); try { await adminApi("/api/v1/admin/catalog", token, { method: "POST", body: JSON.stringify(catalogDraft) }); setCatalogDraft({ module: "app_tool", slug: "", title: "", description: "", unitPrice: "", durationDays: "", stock: "" }); await loadCatalog(); setNotice("Đã thêm sản phẩm vào danh mục."); } catch(err) { setError(err.message); } finally { setBusy(false); } }
+  async function toggleCatalog(item) { setBusy(true); try { await adminApi("/api/v1/admin/catalog/"+encodeURIComponent(item.id)+(item.is_active ? "/deactivate" : "/activate"), token, { method: "POST" }); await loadCatalog(); } catch(err) { setError(err.message); } finally { setBusy(false); } }
+
+  async function reviewTopup(item, status) {
+    setBusy(true); setError(""); setNotice("");
+    try {
+      await adminApi("/api/v1/admin/wallet/topups/" + encodeURIComponent(item.id) + "/review", token, {
+        method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() },
+        body: JSON.stringify({ status, note: status === "confirmed" ? "Đã đối chiếu giao dịch thực nhận" : "Không xác minh được giao dịch" })
+      });
+      await loadTopups();
+      setNotice(status === "confirmed" ? "Đã xác nhận nạp tiền và ghi sổ ví." : "Đã từ chối yêu cầu nạp tiền.");
+    } catch (err) { setError(err.message); }
+    finally { setBusy(false); }
   }
 
   async function refresh(currentToken = token) {
@@ -192,6 +213,8 @@ export default function App() {
         {[
           ["overview", "▦", "Tổng quan"],
           ["orders", "▤", "Hàng đợi đơn hàng"],
+          ["wallet", "₫", "Xác nhận nạp ví"],
+          ["catalog", "▦", "Danh mục dịch vụ"],
           ["releases", "⇧", "Phát hành ứng dụng"],
           ["webhook", "⌁", "Telegram webhook"]
         ].map(([id, icon, label]) => <button key={id} className={"nav-item " + (section === id ? "active" : "")} onClick={() => setSection(id)}>
@@ -201,7 +224,7 @@ export default function App() {
       </aside>
       <section className="main-area">
         <header className="admin-header">
-          <div><span className="crumb">HENDY / ADMIN</span><h1>{section === "orders" ? "Hàng đợi đơn hàng" : section === "releases" ? "Phát hành ứng dụng" : section === "webhook" ? "Telegram webhook" : "Trung tâm quản trị"}</h1></div>
+          <div><span className="crumb">HENDY / ADMIN</span><h1>{section === "orders" ? "Hàng đợi đơn hàng" : section === "wallet" ? "Xác nhận nạp ví" : section === "catalog" ? "Danh mục dịch vụ" : section === "releases" ? "Phát hành ứng dụng" : section === "webhook" ? "Telegram webhook" : "Trung tâm quản trị"}</h1></div>
           <span className="secure">● PRIVATE CONSOLE</span>
         </header>
         {error && <div className="alert error">{error}</div>}
@@ -275,6 +298,32 @@ export default function App() {
             <div className="event-history"><h3>Lịch sử xử lý</h3>{(selectedOrder.events || []).map((event) => <div className="event-row" key={event.id}>
               <span className="event-bullet" /><div><b>{event.from_status ? STATUS_LABEL[event.from_status] + " → " : "Tạo mới → "}{STATUS_LABEL[event.to_status] || event.to_status}</b><small>{event.actor_label || event.actor_type} · {new Date(event.created_at).toLocaleString("vi-VN")}</small>{event.note && <p>{event.note}</p>}</div>
             </div>)}</div>
+          </section>}
+
+          {section === "catalog" && <section className="card">
+            <div className="card-heading"><div><div className="section-kicker">SERVICE CATALOG</div><h2>Quản lý sản phẩm / thời hạn</h2></div><button className="secondary small" onClick={() => loadCatalog()} disabled={busy}>↻ Làm mới</button></div>
+            <form className="upload-form" onSubmit={saveCatalog}>
+              <label>Module<select value={catalogDraft.module} onChange={e=>setCatalogDraft({...catalogDraft,module:e.target.value})}><option value="mini_game_live">Mini Game Live</option><option value="app_tool">Thuê Tool</option><option value="buy_code">Mua Code</option><option value="otp_proxy">OTP & Proxy</option><option value="vip">VIP</option></select></label>
+              <label>Slug<input value={catalogDraft.slug} onChange={e=>setCatalogDraft({...catalogDraft,slug:e.target.value})} placeholder="tool-rental-14-days" required /></label>
+              <label>Tên sản phẩm<input value={catalogDraft.title} onChange={e=>setCatalogDraft({...catalogDraft,title:e.target.value})} required /></label>
+              <label>Giá VND (để trống = báo giá)<input type="number" min="0" step="1" value={catalogDraft.unitPrice} onChange={e=>setCatalogDraft({...catalogDraft,unitPrice:e.target.value})} /></label>
+              <label>Thời hạn (ngày)<input type="number" min="1" max="3650" value={catalogDraft.durationDays} onChange={e=>setCatalogDraft({...catalogDraft,durationDays:e.target.value})} /></label>
+              <label>Tồn kho (để trống = không giới hạn)<input type="number" min="0" value={catalogDraft.stock} onChange={e=>setCatalogDraft({...catalogDraft,stock:e.target.value})} /></label>
+              <label className="wide">Mô tả<textarea rows="2" value={catalogDraft.description} onChange={e=>setCatalogDraft({...catalogDraft,description:e.target.value})} /></label>
+              <button disabled={busy}>＋ Thêm sản phẩm</button>
+            </form>
+            <p className="hint">Đơn giá trong danh mục không tự động trừ ví. Báo giá và thu tiền vẫn cần quy trình xác nhận riêng.</p>
+            <div className="release-table">{catalogItems.map(item=><div className="release-line" key={item.id}><b>{item.title}</b><span>{item.module}</span><small>{item.unit_price == null ? "Chờ báo giá" : money(item.unit_price)} · {item.duration_days ? item.duration_days+" ngày" : "Không giới hạn thời hạn"}</small><button className={item.is_active ? "danger-action" : "primary-action"} disabled={busy} onClick={()=>toggleCatalog(item)}>{item.is_active ? "Tắt" : "Bật"}</button></div>)}</div>
+          </section>}
+
+          {section === "wallet" && <section className="card">
+            <div className="card-heading"><div><div className="section-kicker">WALLET OPERATIONS</div><h2>Yêu cầu nạp tiền đang chờ</h2></div><button className="secondary small" onClick={() => loadTopups()} disabled={busy}>↻ Làm mới</button></div>
+            <p className="hint">Chỉ xác nhận sau khi đối chiếu tiền thực nhận trong tài khoản ngân hàng. Thao tác xác nhận cộng số dư một lần và ghi sổ D1; không xác nhận dựa trên ảnh chụp do khách gửi.</p>
+            <div className="release-table">{topups.length ? topups.map(item => <div className="release-line" key={item.id}>
+              <b>{money(item.amount)}</b><span>{item.customer_name || item.user_id}</span><small>{item.payment_reference} · {item.created_at}</small>
+              <button className="primary-action" disabled={busy} onClick={() => reviewTopup(item,"confirmed")}>Đã nhận tiền</button>
+              <button className="danger-action" disabled={busy} onClick={() => reviewTopup(item,"rejected")}>Từ chối</button>
+            </div>) : <p className="hint">Không có yêu cầu nạp tiền chờ xử lý.</p>}</div>
           </section>}
 
           {section === "releases" && <>
