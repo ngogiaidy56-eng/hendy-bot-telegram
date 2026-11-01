@@ -232,6 +232,19 @@ async function route(request, env) {
     });
   }
 
+  if (path === "/api/v1/activity" && request.method === "GET") {
+    const telegramUser = await authenticateTelegramRequest(request, env);
+    const userId = String(telegramUser.id);
+    const [orders, tickets, walletEntries] = await Promise.all([
+      env.DB.prepare("SELECT id,order_number AS reference,module AS category,title AS description,status,created_at FROM orders WHERE user_id=? ORDER BY created_at DESC LIMIT 20").bind(userId).all(),
+      env.DB.prepare("SELECT id,ticket_number AS reference,'support' AS category,subject AS description,status,created_at FROM support_tickets WHERE user_id=? ORDER BY created_at DESC LIMIT 20").bind(userId).all(),
+      env.DB.prepare("SELECT id,'wallet' AS category,description,entry_type AS status,created_at FROM wallet_entries WHERE user_id=? ORDER BY created_at DESC LIMIT 20").bind(userId).all()
+    ]);
+    const items = [...(orders.results || []), ...(tickets.results || []), ...(walletEntries.results || [])]
+      .sort((a,b) => String(b.created_at).localeCompare(String(a.created_at))).slice(0,40);
+    return json({ activity: items });
+  }
+
   if (path === "/api/v1/me" && request.method === "GET") {
     const telegramUser = await authenticateTelegramRequest(request, env);
     const user = await upsertUser(env, telegramUser.id, telegramUser.first_name || "Khách");
