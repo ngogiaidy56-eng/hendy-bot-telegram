@@ -8,6 +8,7 @@ import { envValidator, getAllowedOrigins, getRequiredSecret } from "./config/env
 import { getRelease, getReleaseStats, listReleases } from "./db/appModel.js";
 import { createOrder, createOrderQuote, getAdminOrder, getAdminOrderStats, getOrderForUser, getOrderStats, listAdminOrders, listOrders, respondToOrderQuote, updateOrderStatus } from "./db/orderModel.js";
 import { upsertUser } from "./db/userModel.js";
+import { createTopup, getWallet, listAdminTopups, reviewTopup } from "./db/walletModel.js";
 import {
   addSupportMessage, claimReferral, createGiftcode, createSupportTicket, ensureReferralCode,
   getReferralSummary, getSupportTicket, getVipProfile, listAdminCatalog, listCatalog,
@@ -149,6 +150,19 @@ async function route(request, env) {
     return new Response(object.body, { headers });
   }
 
+  if (path === "/api/v1/wallet" && request.method === "GET") {
+    const telegramUser = await authenticateTelegramRequest(request, env);
+    await upsertUser(env, telegramUser.id, telegramUser.first_name || "Khách");
+    return json(await getWallet(env, telegramUser.id));
+  }
+
+  if (path === "/api/v1/wallet/topups" && request.method === "POST") {
+    const telegramUser = await authenticateTelegramRequest(request, env);
+    await upsertUser(env, telegramUser.id, telegramUser.first_name || "Khách");
+    const result = await createTopup(env, telegramUser.id, await readJsonLimited(request), request.headers.get("Idempotency-Key"));
+    return json(result, result.duplicate ? 200 : 201);
+  }
+
   if (path === "/api/v1/catalog" && request.method === "GET") {
     return json({ items: await listCatalog(env, url.searchParams.get("module") || "all") });
   }
@@ -254,6 +268,18 @@ async function route(request, env) {
     const telegramUser = await authenticateTelegramRequest(request, env);
     await upsertUser(env, telegramUser.id, telegramUser.first_name || "Khách");
     return handleLinks(request, env, telegramUser, url);
+  }
+
+  if (path === "/api/v1/admin/wallet/topups" && request.method === "GET") {
+    await requireAdmin(request, env);
+    return json({ topups: await listAdminTopups(env, url.searchParams.get("status") || "pending") });
+  }
+
+  const topupReviewMatch = path.match(/^\\/api\\/v1\\/admin\\/wallet\\/topups\\/([0-9a-f-]{36})\\/review$/i);
+  if (topupReviewMatch && request.method === "POST") {
+    const admin = await requireAdmin(request, env);
+    const result = await reviewTopup(env, topupReviewMatch[1], admin, await readJsonLimited(request), request.headers.get("Idempotency-Key"));
+    return json(result);
   }
 
   if (path === "/api/v1/admin/orders" && request.method === "GET") {
