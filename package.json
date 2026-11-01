@@ -1,0 +1,19 @@
+{
+  "name": "hendy-bot-cloudflare-monorepo",
+  "private": true,
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel -r run dev",
+    "build": "pnpm --parallel -r run build",
+    "deploy:web-user": "pnpm -F web-user run deploy",
+    "deploy:web-admin": "pnpm -F web-admin run deploy",
+    "deploy:backend": "pnpm -F backend run deploy",
+    "db:migrate:local": "pnpm -F backend run db:migrate:local",
+    "db:migrate:remote": "pnpm -F backend run db:migrate:remote"
+  },
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  }
+}
