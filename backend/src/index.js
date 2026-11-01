@@ -12,8 +12,28 @@ import { errorHandler } from "./middlewares/errorHandler.js";
 import { rateLimitMiddleware } from "./middlewares/rateLimiter.js";
 import { authenticateTelegramRequest, verifyTelegramInitData } from "./security/telegramAuth.js";
 import { constantTimeEqual } from "./security/cryptoService.js";
-import { json, readJson, safeText } from "./utils/helpers.js";
+import { json, safeText } from "./utils/helpers.js";
 import { logger } from "./utils/logger.js";
+
+async function readJsonLimited(request, maxBytes = 8192) {
+  const declaredLength = Number(request.headers.get("Content-Length") || 0);
+  if (declaredLength > maxBytes) {
+    const error = new Error("Nội dung yêu cầu vượt quá giới hạn 8 KB.");
+    error.status = 413;
+    throw error;
+  }
+  const raw = await request.text();
+  if (new TextEncoder().encode(raw).byteLength > maxBytes) {
+    const error = new Error("Nội dung yêu cầu vượt quá giới hạn 8 KB.");
+    error.status = 413;
+    throw error;
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error("JSON không hợp lệ.");
+  }
+}
 
 function corsHeaders(request, env) {
   const origin = request.headers.get("Origin");
@@ -155,9 +175,7 @@ async function route(request, env) {
       return json({ orders });
     }
 
-    const declaredLength = Number(request.headers.get("Content-Length") || 0);
-    if (declaredLength > 8192) return json({ error: "Nội dung yêu cầu vượt quá giới hạn 8 KB." }, 413);
-    const body = await readJson(request);
+    const body = await readJsonLimited(request);
     const result = await createOrder(env, telegramUser.id, body, request.headers.get("Idempotency-Key"));
     return json(result, result.duplicate ? 200 : 201);
   }
