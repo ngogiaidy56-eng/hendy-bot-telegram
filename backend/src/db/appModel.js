@@ -2,7 +2,7 @@ import { randomId, safeText } from "../utils/helpers.js";
 
 export async function listReleases(env, limit = 50) {
   const result = await env.DB.prepare(
-    "SELECT id, platform, version, r2_path, file_name, file_size, release_notes, released_at FROM app_releases ORDER BY released_at DESC LIMIT ?"
+    "SELECT id, platform, version, file_name, file_size, release_notes, released_at FROM app_releases ORDER BY released_at DESC LIMIT ?"
   ).bind(Math.min(Math.max(Number(limit) || 50, 1), 100)).all();
   return result.results || [];
 }
