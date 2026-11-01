@@ -16,7 +16,7 @@ const MODULE_LABEL = {
   vip: "VIP"
 };
 const NEXT_STATUSES = {
-  pending: ["confirmed", "cancelled"],
+  pending: ["cancelled"],
   confirmed: ["processing", "cancelled"],
   processing: ["completed", "cancelled"],
   completed: [],
