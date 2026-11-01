@@ -9,7 +9,8 @@ export default function FeatureCenter({ module, initData, onClose, onChanged }) 
   const [vip,setVip] = useState(null);
   const [referral,setReferral] = useState(null);
   const [wallet,setWallet] = useState(null);
-  const [tickets,setTickets] = useState([]);\n  const [profile,setProfile] = useState(null);\n  const [activity,setActivity] = useState([]);
+  const [tickets,setTickets] = useState([]);
+  const [profile,setProfile] = useState(null);\n  const [activity,setActivity] = useState([]);
   const [busy,setBusy] = useState(false);
   const [error,setError] = useState("");
   const [notice,setNotice] = useState("");
