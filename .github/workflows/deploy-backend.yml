@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "backend/**"
+      - "tests/**"
       - "packages/db-schema/**"
       - "packages/shared-types/**"
       - "scripts/validate-migrations.py"
@@ -72,7 +73,6 @@ jobs:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    environment: production
     steps:
       - name: Checkout
         uses: actions/checkout@v4
