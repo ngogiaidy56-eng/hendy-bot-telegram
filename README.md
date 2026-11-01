@@ -3,10 +3,10 @@
 Monorepo triển khai trên Cloudflare: hai ứng dụng Pages độc lập, một Worker API/Webhook, D1 lưu dữ liệu nghiệp vụ và R2 lưu tệp phát hành.
 
 ## Kiến trúc
-- apps/web-user: Mini App/người dùng, quản lý mã tài khoản và tải bản phát hành.
-- apps/web-admin: quản trị riêng, upload bản phát hành và đồng bộ Telegram webhook.
+- apps/web-user: Telegram Mini App và khu vực thành viên, dashboard 9 module, danh sách đơn hàng, liên kết tài khoản và tải bản phát hành.
+- apps/web-admin: bảng quản trị riêng, upload bản phát hành và đồng bộ Telegram webhook.
 - backend: một Cloudflare Worker cho REST API và Telegram webhook.
-- D1: hồ sơ người dùng và metadata bản phát hành.
+- D1: hồ sơ người dùng, metadata bản phát hành, đơn hàng, nhật ký trạng thái và schema nền cho giao dịch ví.
 - R2: APK/AAB/IPA/EXE/MSI/DMG và các tệp phát hành.
 - KV: rate limit mức cơ bản.
 - packages/db-schema: migration SQL; packages/shared-types: kiểu dữ liệu chung.
@@ -75,35 +75,66 @@ Build và test:
     pnpm build
     pnpm test
 
-Migration 0001 dùng CREATE TABLE IF NOT EXISTS, không xóa dữ liệu hiện hữu. Migration 0002 bổ sung metadata tệp và gỡ thuộc tính mật khẩu cũ khỏi linked_accounts, giữ lại mã tài khoản nếu JSON đúng định dạng. Worker cũng lọc credential legacy khi đọc dữ liệu.
+## API đã triển khai
 
-## API
+Public:
 - GET /healthz
 - GET /api/v1/health
-- GET /api/v1/me — Authorization: tma <Telegram initData>
-- GET /api/v1/links — Telegram initData
-- POST /api/v1/links — chỉ brand và accountLabel; từ chối password/mk/OTP
-- DELETE /api/v1/links/:brand/:index — Telegram initData
 - GET /api/v1/releases
 - GET /api/v1/releases/:id/download
-- POST /api/v1/admin/releases — Bearer ADMIN_API_TOKEN hoặc Telegram admin
-- GET /api/v1/admin/stats — Bearer ADMIN_API_TOKEN hoặc Telegram admin
-- POST /api/v1/admin/webhook/setup — ADMIN_API_TOKEN và X-Webhook-Setup-Key
 
-Đăng ký webhook:
-    curl -X POST "https://YOUR-WORKER-URL/api/v1/admin/webhook/setup" -H "Authorization: Bearer YOUR_ADMIN_API_TOKEN" -H "X-Webhook-Setup-Key: YOUR_WEBHOOK_SETUP_KEY"
+Yêu cầu Telegram Mini App; mọi request gửi header Authorization: tma <Telegram initData>:
+- GET /api/v1/home — hồ sơ thành viên, số dư đọc-only và số liệu tổng hợp đơn hàng.
+- GET /api/v1/me — hồ sơ cơ bản.
+- GET /api/v1/orders?limit=20&offset=0 — danh sách đơn của chính Telegram user.
+- GET /api/v1/orders/:id — chi tiết một đơn thuộc chính user.
+- POST /api/v1/orders — tạo yêu cầu dịch vụ, bắt buộc header Idempotency-Key (8–128 ký tự an toàn).
+
+Ví dụ tạo đơn (không truyền số tiền; hệ thống chờ nhân viên báo giá):
+
+    curl -X POST "$VITE_API_BASE_URL/api/v1/orders" \
+      -H "Authorization: tma $TELEGRAM_INIT_DATA" \
+      -H "Idempotency-Key: order-form-session-001" \
+      -H "Content-Type: application/json" \
+      -d '{"module":"app_tool","title":"Yêu cầu thuê công cụ","description":"Gói 7 ngày","quantity":1}'
+
+Module tạo đơn ở giai đoạn này: mini_game_live, app_tool, buy_code, otp_proxy, vip. Giá trị tiền do server/admin/provider quyết định ở giai đoạn sau; payload phía trình duyệt không thể thiết lập giá.
+
+Admin:
+- POST /api/v1/admin/releases — Bearer ADMIN_API_TOKEN hoặc Telegram admin allowlist.
+- GET /api/v1/admin/stats — quản trị đã xác thực.
+- POST /api/v1/admin/webhook/setup — quản trị đã xác thực và X-Webhook-Setup-Key.
+
+## Dữ liệu đơn hàng và giao dịch
+
+Migration 0003 tạo:
+- orders: đơn thuộc user_id, trạng thái, nội dung yêu cầu, request hash và unique(user_id, idempotency_key).
+- order_events: nhật ký trạng thái append-only, unique(order_id, event_key).
+- wallet_transactions và wallet_ledger: schema nền cho kết nối ví ở giai đoạn sau; chưa có API ghi nhận tiền khi chưa tích hợp và xác minh nhà cung cấp.
+
+Worker tạo đơn bằng D1 batch gồm đơn hàng và sự kiện "created"; cùng một Idempotency-Key + payload trả lại đơn cũ, còn dùng lại key cho payload khác nhận HTTP 409. Người dùng không thể xem đơn của tài khoản Telegram khác. Đơn mới luôn là pending / awaiting_quote và không trừ số dư.
 
 ## Bảo mật
-Mini App initData được xác thực bằng HMAC, kiểm tra auth_date. CORS chỉ cho origins trong ALLOWED_ORIGINS. Admin API dùng bearer token hoặc Telegram ID allowlist.
 
-Phiên bản cũ lưu mk/password dạng văn bản trong JSON D1. Phiên bản này không thu thập/lưu mật khẩu, OTP hoặc secret tài khoản bên thứ ba. Migration 0002 loại bỏ các thuộc tính credential cũ. Nếu cần liên kết dịch vụ bên ngoài, chỉ tích hợp OAuth chính thức của nhà cung cấp; không gửi mật khẩu qua bot.
+Mini App chỉ gửi raw Telegram.WebApp.initData; Worker xác minh HMAC và auth_date. Không dùng initDataUnsafe để xác thực. initData có thời hạn tối đa 1 giờ trong cấu hình mặc định.
 
-Rate limit KV là best-effort vì KV không có phép tăng nguyên tử. Với lưu lượng lớn, chuyển sang Durable Object rate limiter.
+Webhook xác minh X-Telegram-Bot-Api-Secret-Token. CORS chỉ cấp Access-Control-Allow-Origin cho origin được allowlist. Admin API yêu cầu ADMIN_API_TOKEN hoặc Telegram initData thuộc ADMIN_IDS; mở URL Pages không tự cấp quyền.
+
+Mã nguồn không thu thập/lưu mật khẩu, OTP, cookie hoặc secret tài khoản bên thứ ba. Phần liên kết chỉ lưu mã/tên tài khoản để người dùng quản lý. Chỉ tích hợp OAuth/API chính thức của nhà cung cấp khi bổ sung dịch vụ ngoài.
+
+Rate limit KV hiện là best-effort vì KV không có phép tăng nguyên tử. Với lưu lượng lớn, chuyển sang Durable Object rate limiter.
 
 ## Backup và TLS
     node scripts/db-backup.js
 
 Script xuất D1 remote và upload SQL vào prefix backups/d1 trong R2. Cloudflare tự quản lý chứng chỉ edge; scripts/cert-renewer.js chỉ kiểm tra HTTPS/TLS, không thay thế quy trình cấp/renew certificate của Cloudflare.
 
-## Giới hạn triển khai
-Mã nguồn không thể tự biết database_id, KV namespace ID, Cloudflare token hay quyền tài khoản. Tạo tài nguyên và cài secrets/IDs trước khi chạy GitHub Actions. Không commit .dev.vars hoặc token thật.
+## Triển khai và giới hạn
+
+Trước khi deploy cần thay database_id và KV namespace ID trong backend/wrangler.toml; tạo R2 bucket và hai Pages project; cấu hình secrets/variables trong GitHub và Cloudflare. Không commit .dev.vars hoặc token thật.
+
+Migration 0003 phải được áp dụng trước khi sử dụng API đơn hàng:
+
+    pnpm exec wrangler d1 migrations apply DB --remote --config backend/wrangler.toml
+
+Ví điện tử, xác nhận thanh toán, nạp/rút, OTP/proxy thực tế, Giftcode và hoa hồng REF chưa được bật. Các bảng giao dịch trong migration chỉ là nền dữ liệu; cần xác minh chữ ký webhook, đối soát và idempotency của nhà cung cấp trước khi xử lý tiền thật.
