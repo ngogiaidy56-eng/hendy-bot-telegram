@@ -42,3 +42,11 @@ test("Telegram webhook rejects requests without the configured secret header", a
   assert.equal(response.status, 401);
   assert.deepEqual(await response.json(), { error: "Unauthorized" });
 });
+
+test("Mini App home and order APIs require Telegram initData authentication", async () => {
+  for (const path of ["/api/v1/home", "/api/v1/orders"]) {
+    const request = new Request("https://worker.example" + path);
+    const response = await worker.fetch(request, { DB: {}, STORAGE: {} });
+    assert.equal(response.status, 401, path + " must reject requests without Telegram initData");
+  }
+});
