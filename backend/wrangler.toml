@@ -1,0 +1,16 @@
+name = "hendy-bot-backend"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "hendy_bot_db"
+database_id = "THAY_BANG_ID_D1_CUA_BAN"
+
+[[r2_buckets]]
+binding = "STORAGE"
+bucket_name = "hendy-bot-assets"
+
+[[kv_namespaces]]
+binding = "RATE_LIMITER"
+id = "THAY_BANG_ID_KV_CUA_BAN"
