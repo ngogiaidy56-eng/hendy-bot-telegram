@@ -32,8 +32,9 @@ test("limits order title and accepts bounded description", () => {
 });
 
 
-test("allows only the defined admin order state transitions", () => {
-  assert.equal(canTransitionOrder("pending", "confirmed"), true);
+test("requires customer quote acceptance before an order can become confirmed", () => {
+  assert.equal(canTransitionOrder("pending", "confirmed"), false);
+  assert.equal(canTransitionOrder("pending", "cancelled"), true);
   assert.equal(canTransitionOrder("confirmed", "processing"), true);
   assert.equal(canTransitionOrder("processing", "completed"), true);
   assert.equal(canTransitionOrder("pending", "completed"), false);
