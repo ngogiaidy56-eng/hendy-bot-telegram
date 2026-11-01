@@ -6,6 +6,7 @@ import { handleWebAppData } from "./bot/handlers.js";
 import { telegramCall } from "./bot/telegram.js";
 import { envValidator, getAllowedOrigins, getRequiredSecret } from "./config/env.js";
 import { getRelease, getReleaseStats, listReleases } from "./db/appModel.js";
+import { createOrder, getOrderForUser, getOrderStats, listOrders } from "./db/orderModel.js";
 import { upsertUser } from "./db/userModel.js";
 import { errorHandler } from "./middlewares/errorHandler.js";
 import { rateLimitMiddleware } from "./middlewares/rateLimiter.js";
@@ -14,11 +15,31 @@ import { constantTimeEqual } from "./security/cryptoService.js";
 import { json, safeText } from "./utils/helpers.js";
 import { logger } from "./utils/logger.js";
 
+async function readJsonLimited(request, maxBytes = 8192) {
+  const declaredLength = Number(request.headers.get("Content-Length") || 0);
+  if (declaredLength > maxBytes) {
+    const error = new Error("Nội dung yêu cầu vượt quá giới hạn 8 KB.");
+    error.status = 413;
+    throw error;
+  }
+  const raw = await request.text();
+  if (new TextEncoder().encode(raw).byteLength > maxBytes) {
+    const error = new Error("Nội dung yêu cầu vượt quá giới hạn 8 KB.");
+    error.status = 413;
+    throw error;
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error("JSON không hợp lệ.");
+  }
+}
+
 function corsHeaders(request, env) {
   const origin = request.headers.get("Origin");
   const headers = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Webhook-Setup-Key",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Webhook-Setup-Key, Idempotency-Key",
     "Access-Control-Max-Age": "86400",
     "Vary": "Origin"
   };
@@ -43,7 +64,9 @@ async function requireAdmin(request, env) {
     const allowed = String(env.ADMIN_IDS || "").split(",").map((value) => value.trim()).filter(Boolean);
     if (allowed.includes(String(verified.user.id))) return { id: String(verified.user.id), method: "telegram" };
   }
-  throw new Error("Không có quyền quản trị.");
+  const error = new Error("Không có quyền quản trị.");
+  error.status = 403;
+  throw error;
 }
 
 async function telegramWebhook(request, env) {
@@ -115,10 +138,54 @@ async function route(request, env) {
     return new Response(object.body, { headers });
   }
 
+  if (path === "/api/v1/home" && request.method === "GET") {
+    const telegramUser = await authenticateTelegramRequest(request, env);
+    const user = await upsertUser(env, telegramUser.id, telegramUser.first_name || "Khách");
+    const orderSummary = await getOrderStats(env, telegramUser.id);
+    return json({
+      user: {
+        id: user.id,
+        name: user.name,
+        balance: Number(user.balance || 0),
+        voucher: Number(user.voucher || 0),
+        createdAt: user.created_at
+      },
+      membership: { tier: "Cơ bản", status: "active" },
+      orderSummary,
+      serverTime: new Date().toISOString()
+    });
+  }
+
   if (path === "/api/v1/me" && request.method === "GET") {
     const telegramUser = await authenticateTelegramRequest(request, env);
     const user = await upsertUser(env, telegramUser.id, telegramUser.first_name || "Khách");
     return json({ user: { id: user.id, name: user.name, balance: user.balance, voucher: user.voucher } });
+  }
+
+  if (path === "/api/v1/orders" && (request.method === "GET" || request.method === "POST")) {
+    const telegramUser = await authenticateTelegramRequest(request, env);
+    await upsertUser(env, telegramUser.id, telegramUser.first_name || "Khách");
+
+    if (request.method === "GET") {
+      const orders = await listOrders(env, telegramUser.id, {
+        limit: url.searchParams.get("limit"),
+        offset: url.searchParams.get("offset"),
+        status: url.searchParams.get("status")
+      });
+      return json({ orders });
+    }
+
+    const body = await readJsonLimited(request);
+    const result = await createOrder(env, telegramUser.id, body, request.headers.get("Idempotency-Key"));
+    return json(result, result.duplicate ? 200 : 201);
+  }
+
+  const orderMatch = path.match(/^\/api\/v1\/orders\/([0-9a-f-]{36})$/i);
+  if (orderMatch && request.method === "GET") {
+    const telegramUser = await authenticateTelegramRequest(request, env);
+    const order = await getOrderForUser(env, telegramUser.id, orderMatch[1]);
+    if (!order) return json({ error: "Không tìm thấy đơn hàng." }, 404);
+    return json({ order });
   }
 
   if (path === "/api/v1/links" || /^\/api\/v1\/links\//.test(path)) {
@@ -134,7 +201,11 @@ async function route(request, env) {
 
   if (path === "/api/v1/admin/stats" && request.method === "GET") {
     await requireAdmin(request, env);
-    return json({ stats: await getReleaseStats(env) });
+    const releaseStats = await getReleaseStats(env);
+    const orderStats = await env.DB.prepare(
+      "SELECT COUNT(*) AS total FROM orders"
+    ).first().catch(() => ({ total: 0 }));
+    return json({ stats: { ...releaseStats, orders: Number(orderStats?.total || 0) } });
   }
 
   if (path === "/api/v1/admin/webhook/setup" && request.method === "POST") {
