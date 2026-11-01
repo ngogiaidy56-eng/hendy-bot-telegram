@@ -23,8 +23,13 @@ export function normalizeOrderInput(input) {
   const module = String(input.module || "").trim();
   if (!ORDER_MODULES.includes(module)) throw new Error("Loại đơn hàng chưa được hỗ trợ.");
 
-  const title = safeText(input.title, 100);
-  const description = safeText(input.description, 1000);
+  const rawTitle = String(input.title ?? "").trim();
+  const rawDescription = String(input.description ?? "").trim();
+  if (rawTitle.length > 100 || rawDescription.length > 1000) {
+    throw new Error("Nội dung đơn hàng vượt quá giới hạn cho phép.");
+  }
+  const title = safeText(rawTitle, 100);
+  const description = safeText(rawDescription, 1000);
   const quantity = input.quantity === undefined ? 1 : Number(input.quantity);
   if (title.length < 3) throw new Error("Tên yêu cầu phải có ít nhất 3 ký tự.");
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > 50) {
