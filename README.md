@@ -52,15 +52,35 @@ Worker variables:
 
 Webhook ở /telegram/webhook xác minh X-Telegram-Bot-Api-Secret-Token; không nhúng secret vào URL path.
 
-## GitHub Actions
-Repository secrets:
-- CF_API_TOKEN: Cloudflare API token có quyền Workers Scripts:Edit, D1:Edit, R2:Edit, Pages:Edit.
-- CF_ACCOUNT_ID: Cloudflare Account ID.
+## GitHub Actions và cấu hình Cloudflare
 
-Repository variable:
-- VITE_API_BASE_URL: URL HTTPS Worker, không có dấu slash cuối.
+Tạo GitHub Actions secrets:
+- `CF_API_TOKEN`: Cloudflare API token có quyền Workers Scripts:Edit, Workers Scripts:Read, D1:Edit, KV Storage:Read, R2 Storage:Read, Pages:Edit.
+- `CF_ACCOUNT_ID`: Cloudflare Account ID.
 
-Pages project phải được tạo trước, tên hendy-web-user và hendy-web-admin. Workflow backend chạy test, apply D1 migrations rồi deploy Worker.
+Tạo GitHub Actions repository variables:
+- `CF_D1_DATABASE_ID`: ID D1 database `hendy_bot_db`.
+- `CF_KV_NAMESPACE_ID`: ID KV namespace dùng binding `RATE_LIMITER`.
+- `VITE_API_BASE_URL`: URL HTTPS của Worker, ví dụ `https://hendy-bot-backend.<your-subdomain>.workers.dev`, không có dấu slash cuối.
+
+Tạo hai Pages project một lần (đúng tên production):
+```bash
+pnpm exec wrangler pages project create hendy-web-user --production-branch main
+pnpm exec wrangler pages project create hendy-web-admin --production-branch main
+```
+
+Workflow Pages build cả hai app và chỉ deploy khi push vào `main` hoặc chạy thủ công từ `main`. Workflow Worker chạy kiểm tra cú pháp, unit/integration tests, xác thực toàn bộ SQL migration trong SQLite tạm; sau đó mới kiểm tra Cloudflare secrets/IDs, áp dụng D1 migrations và deploy Worker. Cả ba endpoint production được smoke-test bằng HTTPS sau deploy.
+
+Trước lần deploy Worker đầu tiên, tạo D1/R2/KV và lưu các IDs chính xác ở GitHub Variables. Không điền ID mẫu `REPLACE_WITH_...` vào production. Token Cloudflare phải thuộc đúng account chứa các tài nguyên trên.
+
+Các Worker secrets phải được cài trực tiếp trong Cloudflare (không commit vào Git):
+```bash
+pnpm exec wrangler secret put BOT_TOKEN --config backend/wrangler.toml
+pnpm exec wrangler secret put WEBHOOK_SECRET_TOKEN --config backend/wrangler.toml
+pnpm exec wrangler secret put WEBHOOK_SETUP_KEY --config backend/wrangler.toml
+pnpm exec wrangler secret put ADMIN_API_TOKEN --config backend/wrangler.toml
+```
+Workflow Worker sẽ kiểm tra tên các secret này trước khi deploy; giá trị secret không được in ra log.
 
 ## Chạy local và kiểm tra
     pnpm install
