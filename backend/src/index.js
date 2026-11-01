@@ -6,8 +6,13 @@ import { handleWebAppData } from "./bot/handlers.js";
 import { telegramCall } from "./bot/telegram.js";
 import { envValidator, getAllowedOrigins, getRequiredSecret } from "./config/env.js";
 import { getRelease, getReleaseStats, listReleases } from "./db/appModel.js";
-import { createOrder, getAdminOrder, getAdminOrderStats, getOrderForUser, getOrderStats, listAdminOrders, listOrders, updateOrderStatus } from "./db/orderModel.js";
+import { createOrder, createOrderQuote, getAdminOrder, getAdminOrderStats, getOrderForUser, getOrderStats, listAdminOrders, listOrders, respondToOrderQuote, updateOrderStatus } from "./db/orderModel.js";
 import { upsertUser } from "./db/userModel.js";
+import {
+  addSupportMessage, claimReferral, createGiftcode, createSupportTicket, ensureReferralCode,
+  getReferralSummary, getSupportTicket, getVipProfile, listAdminCatalog, listCatalog,
+  listSupportTickets, redeemGiftcode, saveCatalogItem, setCatalogItemActive
+} from "./db/commerceModel.js";
 import { errorHandler } from "./middlewares/errorHandler.js";
 import { rateLimitMiddleware } from "./middlewares/rateLimiter.js";
 import { authenticateTelegramRequest, verifyTelegramInitData } from "./security/telegramAuth.js";
@@ -38,12 +43,15 @@ async function readJsonLimited(request, maxBytes = 8192) {
 function corsHeaders(request, env) {
   const origin = request.headers.get("Origin");
   const headers = {
-    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Webhook-Setup-Key, Idempotency-Key",
     "Access-Control-Max-Age": "86400",
     "Vary": "Origin"
   };
-  if (origin && getAllowedOrigins(env).has(origin)) headers["Access-Control-Allow-Origin"] = origin;
+  if (origin && getAllowedOrigins(env).has(origin)) {
+    headers["Access-Control-Allow-Origin"] = origin;
+    headers["Access-Control-Allow-Credentials"] = "true";
+  }
   return headers;
 }
 
@@ -126,6 +134,9 @@ async function route(request, env) {
 
   const downloadMatch = path.match(/^\/api\/v1\/releases\/([0-9a-f-]+)\/download$/i);
   if (downloadMatch && request.method === "GET") {
+    const authorization = request.headers.get("Authorization") || "";
+    if (authorization.startsWith("Bearer ")) await requireAdmin(request, env);
+    else await authenticateTelegramRequest(request, env);
     const release = await getRelease(env, downloadMatch[1]);
     if (!release) return json({ error: "Không tìm thấy bản phát hành." }, 404);
     const object = await env.STORAGE.get(release.r2_path);
@@ -136,6 +147,57 @@ async function route(request, env) {
     headers.set("X-Content-Type-Options", "nosniff");
     headers.set("Cache-Control", "private, max-age=300");
     return new Response(object.body, { headers });
+  }
+
+  if (path === "/api/v1/catalog" && request.method === "GET") {
+    return json({ items: await listCatalog(env, url.searchParams.get("module") || "all") });
+  }
+
+  if (path === "/api/v1/vip" && request.method === "GET") {
+    const telegramUser = await authenticateTelegramRequest(request, env);
+    await upsertUser(env, telegramUser.id, telegramUser.first_name || "Khách");
+    return json(await getVipProfile(env, telegramUser.id));
+  }
+
+  if (path === "/api/v1/referral" && request.method === "GET") {
+    const telegramUser = await authenticateTelegramRequest(request, env);
+    await upsertUser(env, telegramUser.id, telegramUser.first_name || "Khách");
+    return json(await getReferralSummary(env, telegramUser.id));
+  }
+
+  if (path === "/api/v1/referral/claim" && request.method === "POST") {
+    const telegramUser = await authenticateTelegramRequest(request, env);
+    await upsertUser(env, telegramUser.id, telegramUser.first_name || "Khách");
+    return json(await claimReferral(env, telegramUser.id, await readJsonLimited(request)));
+  }
+
+  if (path === "/api/v1/giftcodes/redeem" && request.method === "POST") {
+    const telegramUser = await authenticateTelegramRequest(request, env);
+    await upsertUser(env, telegramUser.id, telegramUser.first_name || "Khách");
+    return json(await redeemGiftcode(env, telegramUser.id, await readJsonLimited(request), request.headers.get("Idempotency-Key")));
+  }
+
+  if (path === "/api/v1/support/tickets" && (request.method === "GET" || request.method === "POST")) {
+    const telegramUser = await authenticateTelegramRequest(request, env);
+    await upsertUser(env, telegramUser.id, telegramUser.first_name || "Khách");
+    if (request.method === "GET") return json({ tickets: await listSupportTickets(env, telegramUser.id) });
+    const created = await createSupportTicket(env, telegramUser.id, await readJsonLimited(request), request.headers.get("Idempotency-Key"));
+    return json(created, created.duplicate ? 200 : 201);
+  }
+
+  const customerTicketMatch = path.match(/^\/api\/v1\/support\/tickets\/([0-9a-f-]{36})(?:\/(messages))?$/i);
+  if (customerTicketMatch && request.method === "GET" && !customerTicketMatch[2]) {
+    const telegramUser = await authenticateTelegramRequest(request, env);
+    const ticket = await getSupportTicket(env, customerTicketMatch[1], telegramUser.id);
+    if (!ticket) return json({ error: "Không tìm thấy ticket hỗ trợ." }, 404);
+    return json(ticket);
+  }
+
+  if (customerTicketMatch && request.method === "POST" && customerTicketMatch[2] === "messages") {
+    const telegramUser = await authenticateTelegramRequest(request, env);
+    const body = await readJsonLimited(request);
+    const ticket = await addSupportMessage(env, customerTicketMatch[1], { type: "user", id: telegramUser.id }, body.message, request.headers.get("Idempotency-Key"), telegramUser.id);
+    return json(ticket);
   }
 
   if (path === "/api/v1/home" && request.method === "GET") {
@@ -206,7 +268,7 @@ async function route(request, env) {
     return json({ ...result, stats: await getAdminOrderStats(env) });
   }
 
-  const adminOrderMatch = path.match(new RegExp("^/api/v1/admin/orders/([0-9a-f-]{36})(?:/(status))?$", "i"));
+  const adminOrderMatch = path.match(new RegExp("^/api/v1/admin/orders/([0-9a-f-]{36})(?:/(status|quote))?$", "i"));
   if (adminOrderMatch && request.method === "GET" && !adminOrderMatch[2]) {
     await requireAdmin(request, env);
     const result = await getAdminOrder(env, adminOrderMatch[1]);
@@ -219,6 +281,61 @@ async function route(request, env) {
     const body = await readJsonLimited(request);
     const result = await updateOrderStatus(env, adminOrderMatch[1], admin, body, request.headers.get("Idempotency-Key"));
     return json(result, 200);
+  }
+
+  if (adminOrderMatch && request.method === "POST" && adminOrderMatch[2] === "quote") {
+    const admin = await requireAdmin(request, env);
+    const body = await readJsonLimited(request);
+    const result = await createOrderQuote(env, adminOrderMatch[1], admin, body, request.headers.get("Idempotency-Key"));
+    return json(result, 200);
+  }
+
+  const quoteResponseMatch = path.match(/^\/api\/v1\/orders\/([0-9a-f-]{36})\/quotes\/([0-9a-f-]{36})\/respond$/i);
+  if (quoteResponseMatch && request.method === "POST") {
+    const telegramUser = await authenticateTelegramRequest(request, env);
+    const body = await readJsonLimited(request);
+    return json(await respondToOrderQuote(env, telegramUser.id, quoteResponseMatch[1], quoteResponseMatch[2], body.decision));
+  }
+
+  if (path === "/api/v1/admin/catalog" && request.method === "GET") {
+    await requireAdmin(request, env);
+    return json({ items: await listAdminCatalog(env) });
+  }
+
+  if (path === "/api/v1/admin/catalog" && request.method === "POST") {
+    await requireAdmin(request, env);
+    return json({ item: await saveCatalogItem(env, await readJsonLimited(request)) }, 201);
+  }
+
+  const catalogStatusMatch = path.match(/^\/api\/v1\/admin\/catalog\/([0-9a-f-]{36})\/(activate|deactivate)$/i);
+  if (catalogStatusMatch && request.method === "POST") {
+    await requireAdmin(request, env);
+    return json(await setCatalogItemActive(env, catalogStatusMatch[1], catalogStatusMatch[2] === "activate"));
+  }
+
+  if (path === "/api/v1/admin/giftcodes" && request.method === "POST") {
+    const admin = await requireAdmin(request, env);
+    return json(await createGiftcode(env, admin, await readJsonLimited(request)), 201);
+  }
+
+  if (path === "/api/v1/admin/support/tickets" && request.method === "GET") {
+    await requireAdmin(request, env);
+    return json({ tickets: await listSupportTickets(env, null, url.searchParams.get("status") || "all") });
+  }
+
+  const adminTicketMatch = path.match(/^\/api\/v1\/admin\/support\/tickets\/([0-9a-f-]{36})(?:\/(messages))?$/i);
+  if (adminTicketMatch && request.method === "GET" && !adminTicketMatch[2]) {
+    await requireAdmin(request, env);
+    const ticket = await getSupportTicket(env, adminTicketMatch[1]);
+    if (!ticket) return json({ error: "Không tìm thấy ticket hỗ trợ." }, 404);
+    return json(ticket);
+  }
+
+  if (adminTicketMatch && request.method === "POST" && adminTicketMatch[2] === "messages") {
+    const admin = await requireAdmin(request, env);
+    const body = await readJsonLimited(request);
+    const ticket = await addSupportMessage(env, adminTicketMatch[1], { type: "admin", id: admin.id }, body.message, request.headers.get("Idempotency-Key"));
+    return json(ticket);
   }
 
   if (path === "/api/v1/admin/releases" && request.method === "POST") {
