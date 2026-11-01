@@ -28,5 +28,5 @@ test("rejects unsupported modules and invalid quantities", () => {
 
 test("limits order title and accepts bounded description", () => {
   assert.throws(() => normalizeOrderInput({ module: "vip", title: "ab" }), /ít nhất 3 ký tự/i);
-  assert.throws(() => normalizeOrderInput({ module: "vip", title: "Yêu cầu VIP", description: "x".repeat(1001) }), /không hợp lệ/i);
+  assert.throws(() => normalizeOrderInput({ module: "vip", title: "Yêu cầu VIP", description: "x".repeat(1001) }), /vượt quá giới hạn/i);
 });
