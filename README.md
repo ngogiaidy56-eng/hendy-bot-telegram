@@ -165,3 +165,22 @@ Luồng trạng thái được giới hạn:
 Migration 0004 bổ sung loại người thực hiện và nhãn admin vào nhật ký, không xóa đơn cũ. D1 batch thực hiện cập nhật trạng thái + ghi event trong cùng transaction; câu UPDATE có điều kiện theo trạng thái hiện tại để tránh hai nhân viên ghi đè lẫn nhau. Cùng một Idempotency-Key chỉ có thể phát lại đúng thao tác đã ghi.
 
 Admin web có hàng đợi, lọc trạng thái/module, tìm kiếm, chi tiết đơn, lịch sử và nút xác nhận/đang xử lý/hoàn tất/hủy. Admin không thể chỉnh tiền ở màn hình này; báo giá, thanh toán, đối soát và tích hợp nhà cung cấp nằm ở giai đoạn tiếp theo.
+
+## 9 module member area và ví điện tử
+
+Web-user hiện mở Feature Center cho 9 module:
+- Mini Game Live: quản lý mã/tên tài khoản liên kết ở tab Tài khoản liên kết; tạo đơn và theo dõi trạng thái trong Đơn hàng.
+- Thuê Tool, Mua Code, OTP & Proxy: đọc danh mục D1 theo module và tạo đơn bằng API `/api/v1/orders`. Giá hiển thị chỉ để tham khảo; backend không nhận số tiền từ trình duyệt.
+- Ví điện tử: `GET /api/v1/wallet` đọc số dư/lịch sử; `POST /api/v1/wallet/topups` tạo yêu cầu nạp với `Idempotency-Key`. Tối thiểu 10.000 VND, tối đa 50.000.000 VND.
+- VIP: `GET /api/v1/vip` đọc cấp bậc, điểm và quyền lợi.
+- Trung tâm khách hàng: `GET/POST /api/v1/support/tickets` và `GET /api/v1/support/tickets/:id`; gửi trao đổi với `POST /api/v1/support/tickets/:id/messages`.
+- REF: `GET /api/v1/referral` xem mã/liên kết/thống kê; `POST /api/v1/referral/claim` nhận mã giới thiệu. Hoa hồng vẫn ở trạng thái chưa chi trả cho đến khi có đối soát giao dịch.
+- Giftcode: `POST /api/v1/giftcodes/redeem` với `Idempotency-Key`; mã chỉ đổi một lần cho mỗi tài khoản.
+
+### Xác nhận nạp tiền
+
+Migration 0005 tạo `wallet_topup_requests` và `wallet_entries`. Admin API:
+- `GET /api/v1/admin/wallet/topups?status=pending`
+- `POST /api/v1/admin/wallet/topups/:id/review` với body `{"status":"confirmed","note":"Đã đối chiếu giao dịch"}` hoặc `{"status":"rejected","note":"Không nhận được tiền"}`, kèm `Idempotency-Key`.
+
+Admin chỉ chọn confirmed sau khi kiểm tra giao dịch thực nhận qua ngân hàng. D1 batch cập nhật trạng thái, cộng số dư và ghi ledger trong cùng transaction; unique(topup_id) ngăn ghi sổ hai lần. Ảnh chụp chuyển khoản không được xem là bằng chứng tự động. Chưa có cổng thanh toán/webhook ngân hàng; do đó không tự động cộng tiền khi khách tạo yêu cầu nạp.
