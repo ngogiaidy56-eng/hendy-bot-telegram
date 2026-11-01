@@ -1,7 +1,8 @@
-export async function rateLimitMiddleware(kv, ip) {
+export async function rateLimitMiddleware(kv, ip, limit = 60, windowSeconds = 60) {
   if (!kv) return true;
-  const current = await kv.get(`rate:${ip}`);
-  if (current && parseInt(current) > 30) return false; // Max 30 req/phút
-  await kv.put(`rate:${ip}`, (parseInt(current || 0) + 1).toString(), { expirationTtl: 60 });
+  const key = "rate:" + String(ip || "unknown").slice(0, 80);
+  const current = Number(await kv.get(key) || 0);
+  if (current >= limit) return false;
+  await kv.put(key, String(current + 1), { expirationTtl: windowSeconds });
   return true;
 }

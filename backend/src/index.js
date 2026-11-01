@@ -1,58 +1,158 @@
-import { Telegraf } from 'telegraf';
-import { setupBotCommands } from './bot/commands.js';
-import { setupBotActions } from './bot/actions.js';
-import { setupBotHandlers } from './bot/handlers.js';
-import { rateLimitMiddleware } from './middlewares/rateLimiter.js';
-import { envValidator } from './config/env.js';
+import { handleLinks } from "./api/linkAccount.js";
+import { handleUploadApp } from "./api/uploadApp.js";
+import { handleCallback } from "./bot/actions.js";
+import { handleCommand } from "./bot/commands.js";
+import { handleWebAppData } from "./bot/handlers.js";
+import { telegramCall } from "./bot/telegram.js";
+import { envValidator, getAllowedOrigins, getRequiredSecret } from "./config/env.js";
+import { getRelease, getReleaseStats, listReleases } from "./db/appModel.js";
+import { upsertUser } from "./db/userModel.js";
+import { errorHandler } from "./middlewares/errorHandler.js";
+import { rateLimitMiddleware } from "./middlewares/rateLimiter.js";
+import { authenticateTelegramRequest, verifyTelegramInitData } from "./security/telegramAuth.js";
+import { constantTimeEqual } from "./security/cryptoService.js";
+import { json, safeText } from "./utils/helpers.js";
+import { logger } from "./utils/logger.js";
+
+function corsHeaders(request, env) {
+  const origin = request.headers.get("Origin");
+  const headers = {
+    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Webhook-Setup-Key",
+    "Access-Control-Max-Age": "86400",
+    "Vary": "Origin"
+  };
+  if (origin && getAllowedOrigins(env).has(origin)) headers["Access-Control-Allow-Origin"] = origin;
+  return headers;
+}
+
+function withCors(response, request, env) {
+  const headers = new Headers(response.headers);
+  for (const [key, value] of Object.entries(corsHeaders(request, env))) headers.set(key, value);
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
+async function requireAdmin(request, env) {
+  const authorization = request.headers.get("Authorization") || "";
+  const token = env.ADMIN_API_TOKEN;
+  if (token && authorization.startsWith("Bearer ") && constantTimeEqual(authorization.slice(7), token)) {
+    return { id: "api-admin", method: "token" };
+  }
+  if (authorization.startsWith("tma ")) {
+    const verified = await verifyTelegramInitData(authorization.slice(4), getRequiredSecret(env, "BOT_TOKEN"));
+    const allowed = String(env.ADMIN_IDS || "").split(",").map((value) => value.trim()).filter(Boolean);
+    if (allowed.includes(String(verified.user.id))) return { id: String(verified.user.id), method: "telegram" };
+  }
+  throw new Error("Không có quyền quản trị.");
+}
+
+async function telegramWebhook(request, env) {
+  const expected = getRequiredSecret(env, "WEBHOOK_SECRET_TOKEN");
+  const supplied = request.headers.get("X-Telegram-Bot-Api-Secret-Token") || "";
+  if (!constantTimeEqual(expected, supplied)) return json({ error: "Unauthorized" }, 401);
+  const update = await request.json();
+  if (update.callback_query) await handleCallback(update, env);
+  else if (update.message?.web_app_data) await handleWebAppData(update, env);
+  else if (update.message?.text) {
+    const handled = await handleCommand(update, env);
+    if (!handled) logger.info("telegram_message_ignored", { updateId: update.update_id });
+  }
+  return json({ ok: true });
+}
+
+async function setupWebhook(request, env) {
+  const setupKey = getRequiredSecret(env, "WEBHOOK_SETUP_KEY");
+  const supplied = request.headers.get("X-Webhook-Setup-Key") || "";
+  if (!constantTimeEqual(setupKey, supplied)) return json({ error: "Unauthorized" }, 401);
+  const baseUrl = String(env.PUBLIC_API_BASE_URL || "").replace(/\/+$/, "");
+  if (!baseUrl.startsWith("https://")) return json({ error: "PUBLIC_API_BASE_URL phải là URL HTTPS của Worker." }, 400);
+  const secretToken = getRequiredSecret(env, "WEBHOOK_SECRET_TOKEN");
+  await telegramCall(env, "setWebhook", {
+    url: baseUrl + "/telegram/webhook",
+    secret_token: secretToken,
+    allowed_updates: ["message", "callback_query"]
+  });
+  return json({ success: true, message: "Đã đăng ký webhook Telegram." });
+}
+
+async function route(request, env) {
+  const url = new URL(request.url);
+  const path = url.pathname;
+  if (request.method === "OPTIONS") return new Response(null, { status: 204 });
+
+  if (path === "/" || path === "/healthz" || path === "/api/v1/health") {
+    return json({ ok: true, service: "hendy-bot-backend", platform: "cloudflare-workers", timestamp: new Date().toISOString() });
+  }
+
+  if (path === "/telegram/webhook" && request.method === "POST") {
+    envValidator(env);
+    return telegramWebhook(request, env);
+  }
+
+  if (!path.startsWith("/api/v1/")) return json({ error: "Not found." }, 404);
+  envValidator(env);
+
+  const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+  const allowed = await rateLimitMiddleware(env.RATE_LIMITER, ip, 90, 60);
+  if (!allowed) return json({ error: "Quá nhiều yêu cầu. Hãy thử lại sau." }, 429);
+
+  if (path === "/api/v1/releases" && request.method === "GET") {
+    const releases = await listReleases(env);
+    return json({ releases: releases.map(({ r2_path, ...item }) => item) });
+  }
+
+  const downloadMatch = path.match(/^\/api\/v1\/releases\/([0-9a-f-]+)\/download$/i);
+  if (downloadMatch && request.method === "GET") {
+    const release = await getRelease(env, downloadMatch[1]);
+    if (!release) return json({ error: "Không tìm thấy bản phát hành." }, 404);
+    const object = await env.STORAGE.get(release.r2_path);
+    if (!object) return json({ error: "Tệp không còn tồn tại trong R2." }, 404);
+    const headers = new Headers();
+    object.writeHttpMetadata(headers);
+    headers.set("Content-Disposition", "attachment; filename=\"" + safeText(release.file_name || "release.bin", 180).replace(/"/g, "") + "\"");
+    headers.set("X-Content-Type-Options", "nosniff");
+    headers.set("Cache-Control", "private, max-age=300");
+    return new Response(object.body, { headers });
+  }
+
+  if (path === "/api/v1/me" && request.method === "GET") {
+    const telegramUser = await authenticateTelegramRequest(request, env);
+    const user = await upsertUser(env, telegramUser.id, telegramUser.first_name || "Khách");
+    return json({ user: { id: user.id, name: user.name, balance: user.balance, voucher: user.voucher } });
+  }
+
+  if (path === "/api/v1/links" || /^\/api\/v1\/links\//.test(path)) {
+    const telegramUser = await authenticateTelegramRequest(request, env);
+    await upsertUser(env, telegramUser.id, telegramUser.first_name || "Khách");
+    return handleLinks(request, env, telegramUser, url);
+  }
+
+  if (path === "/api/v1/admin/releases" && request.method === "POST") {
+    await requireAdmin(request, env);
+    return handleUploadApp(request, env);
+  }
+
+  if (path === "/api/v1/admin/stats" && request.method === "GET") {
+    await requireAdmin(request, env);
+    return json({ stats: await getReleaseStats(env) });
+  }
+
+  if (path === "/api/v1/admin/webhook/setup" && request.method === "POST") {
+    await requireAdmin(request, env);
+    return setupWebhook(request, env);
+  }
+
+  return json({ error: "Not found." }, 404);
+}
 
 export default {
   async fetch(request, env, ctx) {
+    const requestId = crypto.randomUUID();
     try {
-      envValidator(env);
-      const url = new URL(request.url);
-
-      const corsHeaders = {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization'
-      };
-      if (request.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
-
-      const bot = new Telegraf(env.BOT_TOKEN, { telegram: { webhookReply: true } });
-      bot.context.env = env;
-      
-      setupBotCommands(bot);
-      setupBotActions(bot);
-      setupBotHandlers(bot);
-
-      // Webhook Telegram
-      if (request.method === 'POST' && url.pathname === `/webhook/${env.WEBHOOK_SECRET}`) {
-        const update = await request.json();
-        await bot.handleUpdate(update);
-        return new Response('OK');
-      }
-
-      // API Backend
-      if (url.pathname.startsWith('/api/')) {
-        const ip = request.headers.get('cf-connecting-ip') || 'unknown';
-        if (!(await rateLimitMiddleware(env.RATE_LIMITER, ip))) {
-          return new Response('Too Many Requests', { status: 429, headers: corsHeaders });
-        }
-        
-        // Ví dụ Endpoint Upload lên R2
-        if (request.method === 'POST' && url.pathname === '/api/upload-app') {
-            const formData = await request.formData();
-            const file = formData.get('file');
-            if (file) {
-                await env.STORAGE.put(`releases/${file.name}`, file.stream());
-                return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
-            }
-        }
-      }
-
-      return new Response('Hendy Bot Backend Active!', { status: 200, headers: corsHeaders });
+      const response = await route(request, env, ctx);
+      return withCors(response, request, env);
     } catch (error) {
-      return new Response(JSON.stringify({ error: error.message }), { status: 500 });
+      return withCors(errorHandler(error, requestId), request, env);
     }
   }
 };

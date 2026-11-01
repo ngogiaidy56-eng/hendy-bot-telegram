@@ -1,54 +1,50 @@
-import { getUser, updateLinkedAccounts } from '../db/userModel.js';
-import { getMainMenu, getMinigameMenu, getV2LinksMenu } from './keyboards.js';
+import { deleteLinkedAccount, getUser } from "../db/userModel.js";
+import { linksMenu, mainMenu, minigameMenu } from "./keyboards.js";
+import { answerCallback, editMessage } from "./telegram.js";
 
-export function setupBotActions(bot) {
-  bot.action('back_start', async (ctx) => {
-    const u = await getUser(ctx.env, ctx.chat.id.toString());
-    const text = `🤖 *HENDY CYBERTECH PRO v2026* 🚀\nChào, *${u.name}*\n💰 **Ví:** \`${(u.balance || 0).toLocaleString('vi-VN')} VNĐ\``;
-    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...getMainMenu(ctx.env) });
-  });
+export async function handleCallback(update, env) {
+  const query = update.callback_query;
+  if (!query) return false;
+  const data = query.data || "";
+  const chatId = query.message?.chat?.id;
+  const messageId = query.message?.message_id;
+  if (!chatId || !messageId) {
+    await answerCallback(env, query.id, "Không thể xử lý tin nhắn này.");
+    return true;
+  }
 
-  bot.action('menu_minigame', async (ctx) => {
-    await ctx.editMessageText(`LIVESTREAM 🚀\n*PREMIUM* 👑`, { parse_mode: 'Markdown', ...getMinigameMenu() });
-  });
-
-  bot.action('v2_links', async (ctx) => {
-    const u = await getUser(ctx.env, ctx.chat.id.toString());
-    await ctx.editMessageText(`MINI GAME\n📊 *Thống Kê Liên Kết*`, { parse_mode: 'Markdown', ...getV2LinksMenu(u.linked_accounts) });
-  });
-
-  bot.action(/^manage_(.+)$/, async (ctx) => {
-    const brand = ctx.match[1];
-    const u = await getUser(ctx.env, ctx.chat.id.toString());
-    const accounts = u.linked_accounts[brand] || [];
-    
-    let text = `📂 *DANH SÁCH TÀI KHOẢN (${brand})*\n`;
-    const buttons = [];
-    if (accounts.length === 0) text += "Chưa có tài khoản nào.";
-    else {
-      accounts.forEach((acc, idx) => {
-        text += `${idx + 1}. TK: \`${acc.tk}\` - Code: \`${acc.miniCode}\`\n`;
-        buttons.push([{ text: `❌ Xóa ${acc.tk}`, callback_data: `del_${brand}_${idx}` }]);
-      });
+  if (data === "back_start") {
+    await editMessage(env, chatId, messageId, "HENDY BOT\nChọn chức năng bạn cần:", mainMenu(env));
+  } else if (data === "v2_links") {
+    const user = await getUser(env, query.from.id);
+    await editMessage(env, chatId, messageId, "QUẢN LÝ LIÊN KẾT\nChọn nền tảng:", linksMenu(user?.linked_accounts || {}));
+  } else if (data === "menu_minigame") {
+    await editMessage(env, chatId, messageId, "MINIGAME\nCác tiện ích sẽ được cập nhật tại đây.", minigameMenu());
+  } else if (data.startsWith("manage_")) {
+    const brand = data.slice(7);
+    const user = await getUser(env, query.from.id);
+    const rows = user?.linked_accounts?.[brand] || [];
+    const buttons = rows.map((item, index) => [{ text: "Xóa " + item.tk, callback_data: "del_" + brand + "_" + index }]);
+    buttons.push([{ text: "⬅️ Quay lại", callback_data: "v2_links" }]);
+    const lines = rows.length ? rows.map((item, index) => (index + 1) + ". " + item.tk).join("\n") : "Chưa có liên kết.";
+    await editMessage(env, chatId, messageId, brand + "\n" + lines, { inline_keyboard: buttons });
+  } else if (data.startsWith("del_")) {
+    const match = data.match(/^del_([A-Z0-9]+)_(\d+)$/);
+    if (match) {
+      const links = await deleteLinkedAccount(env, query.from.id, match[1], Number(match[2]));
+      const buttons = (links[match[1]] || []).map((item, index) => [{ text: "Xóa " + item.tk, callback_data: "del_" + match[1] + "_" + index }]);
+      buttons.push([{ text: "⬅️ Quay lại", callback_data: "v2_links" }]);
+      await editMessage(env, chatId, messageId, match[1] + "\nĐã cập nhật danh sách liên kết.", { inline_keyboard: buttons });
+      await answerCallback(env, query.id, "Đã xóa liên kết.");
+      return true;
     }
-    buttons.push([{ text: '🔙 Quay lại', callback_data: 'v2_links' }]);
-    
-    await ctx.editMessageText(text, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: buttons } });
-  });
+  } else if (data === "help") {
+    await editMessage(env, chatId, messageId, "HƯỚNG DẪN\nDùng Mini App để quản lý liên kết.\nKhông gửi mật khẩu hoặc mã OTP cho bot.", mainMenu(env));
+  } else {
+    await answerCallback(env, query.id, "Chức năng chưa khả dụng.");
+    return true;
+  }
 
-  bot.action(/^del_(.+)_(\d+)$/, async (ctx) => {
-    const brand = ctx.match[1];
-    const idx = parseInt(ctx.match[2]);
-    const u = await getUser(ctx.env, ctx.chat.id.toString());
-    
-    if (u.linked_accounts[brand] && u.linked_accounts[brand].length > idx) {
-      u.linked_accounts[brand].splice(idx, 1);
-      await updateLinkedAccounts(ctx.env, ctx.chat.id.toString(), u.linked_accounts);
-      await ctx.answerCbQuery('Đã xóa thành công!');
-      ctx.match[1] = brand; 
-      bot.handleUpdate({ callback_query: { ...ctx.callbackQuery, data: `manage_${brand}` }});
-    }
-  });
-
-  bot.action('unimplemented', (ctx) => ctx.answerCbQuery('🚀 Tính năng sắp ra mắt!', { show_alert: true }));
+  await answerCallback(env, query.id);
+  return true;
 }
