@@ -63,7 +63,7 @@ Tạo GitHub Actions repository variables:
 - `CF_KV_NAMESPACE_ID`: ID KV namespace dùng binding `RATE_LIMITER`.
 - `VITE_API_BASE_URL`: URL HTTPS của Worker, ví dụ `https://hendy-bot-backend.<your-subdomain>.workers.dev`, không có dấu slash cuối.
 
-Tạo hai Pages project một lần (đúng tên production):
+Workflow Pages tự kiểm tra và tạo hai project nếu chưa tồn tại (tên production: `hendy-web-user`, `hendy-web-admin`). Có thể tạo thủ công trước bằng Wrangler nếu muốn:
 ```bash
 pnpm exec wrangler pages project create hendy-web-user --production-branch main
 pnpm exec wrangler pages project create hendy-web-admin --production-branch main
