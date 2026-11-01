@@ -32,7 +32,8 @@ export default function App() {
   const [stats, setStats] = useState(null);
   const [releases, setReleases] = useState([]);
   const [orders, setOrders] = useState([]);
-  const [topups, setTopups] = useState([]);\n  const [catalogItems, setCatalogItems] = useState([]);\n  const [catalogDraft, setCatalogDraft] = useState({ module: "app_tool", slug: "", title: "", description: "", unitPrice: "", durationDays: "", stock: "" });
+  const [topups, setTopups] = useState([]);
+  const [catalogItems, setCatalogItems] = useState([]);\n  const [catalogDraft, setCatalogDraft] = useState({ module: "app_tool", slug: "", title: "", description: "", unitPrice: "", durationDays: "", stock: "" });
   const [orderStats, setOrderStats] = useState(null);
   const [queueTotal, setQueueTotal] = useState(0);
   const [queueStatus, setQueueStatus] = useState("all");
@@ -57,7 +58,8 @@ export default function App() {
     setOrderStats(result.stats || null);
   }
 
-  async function loadTopups(currentToken = token) { const result = await adminApi("/api/v1/admin/wallet/topups?status=pending", currentToken); setTopups(result.topups || []); }\n  async function loadCatalog(currentToken = token) { const result = await adminApi("/api/v1/admin/catalog", currentToken); setCatalogItems(result.items || []); }\n  async function saveCatalog(event) { event.preventDefault(); setBusy(true); setError(""); try { await adminApi("/api/v1/admin/catalog", token, { method: "POST", body: JSON.stringify(catalogDraft) }); setCatalogDraft({ module: "app_tool", slug: "", title: "", description: "", unitPrice: "", durationDays: "", stock: "" }); await loadCatalog(); setNotice("Đã thêm sản phẩm vào danh mục."); } catch(err) { setError(err.message); } finally { setBusy(false); } }\n  async function toggleCatalog(item) { setBusy(true); try { await adminApi("/api/v1/admin/catalog/"+encodeURIComponent(item.id)+(item.is_active ? "/deactivate" : "/activate"), token, { method: "POST" }); await loadCatalog(); } catch(err) { setError(err.message); } finally { setBusy(false); } }
+  async function loadTopups(currentToken = token) { const result = await adminApi("/api/v1/admin/wallet/topups?status=pending", currentToken); setTopups(result.topups || []); }
+  async function loadCatalog(currentToken = token) { const result = await adminApi("/api/v1/admin/catalog", currentToken); setCatalogItems(result.items || []); }\n  async function saveCatalog(event) { event.preventDefault(); setBusy(true); setError(""); try { await adminApi("/api/v1/admin/catalog", token, { method: "POST", body: JSON.stringify(catalogDraft) }); setCatalogDraft({ module: "app_tool", slug: "", title: "", description: "", unitPrice: "", durationDays: "", stock: "" }); await loadCatalog(); setNotice("Đã thêm sản phẩm vào danh mục."); } catch(err) { setError(err.message); } finally { setBusy(false); } }\n  async function toggleCatalog(item) { setBusy(true); try { await adminApi("/api/v1/admin/catalog/"+encodeURIComponent(item.id)+(item.is_active ? "/deactivate" : "/activate"), token, { method: "POST" }); await loadCatalog(); } catch(err) { setError(err.message); } finally { setBusy(false); } }
 
   async function reviewTopup(item, status) {
     setBusy(true); setError(""); setNotice("");
