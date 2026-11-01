@@ -1,0 +1,6 @@
+{
+  "name": "Hendy-Bot-Tele",
+  "description": "Telegram Bot & Telegram Mini App powered by Gemini AI with complete Node.js Express backend and React Vite frontend.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
